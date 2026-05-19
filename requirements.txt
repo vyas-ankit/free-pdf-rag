@@ -2,6 +2,8 @@ streamlit
 langchain
 langchain-community
 langchain-groq
+langchain-pinecone
+pinecone
+boto3
 sentence-transformers
-faiss-cpu
 pypdf
