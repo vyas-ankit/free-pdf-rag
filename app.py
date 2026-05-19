@@ -77,7 +77,7 @@ if vector_store:
 
         # Set up modern LCEL retrieval chain
         retriever = vector_store.as_retriever(search_kwargs={"k": 3})
-        llm = ChatGroq(model="llama3-8b-8192", groq_api_key=groq_api_key)
+        llm = ChatGroq(model="llama-3.3-70b-versatile", groq_api_key=groq_api_key)
         
         system_prompt = (
             "You are an assistant for question-answering tasks. "
