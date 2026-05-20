@@ -3,7 +3,7 @@ name: Build and Deploy to Amazon ECS
 on:
   push:
     branches:
-      - first-branch # Triggers the build on any branch push
+      - first_branch # Triggers the build on any branch push
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
