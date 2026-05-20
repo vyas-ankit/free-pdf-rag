@@ -8,6 +8,11 @@ import rag_logic
 
 app = FastAPI(title="RAG Backend API")
 
+@app.get("/")
+def health_check():
+    """Default health check endpoint for AWS Load Balancer."""
+    return {"status": "healthy"}
+
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
