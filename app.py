@@ -1,52 +1,21 @@
 # app.py
-
 import streamlit as st
+import requests
 import os
-import tempfile
-import rag_logic
 
-st.set_page_config(page_title="PDF RAG Chatbot (S3 + Pinecone)", layout="centered")
-st.title("📄 S3 + Pinecone PDF RAG Chatbot")
+st.set_page_config(page_title="PDF RAG Chatbot", layout="centered")
+st.title("📄 PDF RAG Chatbot")
 
-# 1. Retrieve Secrets
-# Core Keys
-if "GROQ_API_KEY" in st.secrets:
-    groq_api_key = st.secrets["GROQ_API_KEY"]
-else:
-    groq_api_key = st.sidebar.text_input("Enter Groq API Key", type="password")
+# Point to backend URL
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
-if "PINECONE_API_KEY" in st.secrets:
-    pinecone_api_key = st.secrets["PINECONE_API_KEY"]
-else:
-    pinecone_api_key = st.sidebar.text_input("Enter Pinecone API Key", type="password")
-
-# AWS Keys
-if all(key in st.secrets for key in ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION", "AWS_S3_BUCKET_NAME"]):
-    aws_access_key = st.secrets["AWS_ACCESS_KEY_ID"]
-    aws_secret_key = st.secrets["AWS_SECRET_ACCESS_KEY"]
-    aws_region = st.secrets["AWS_DEFAULT_REGION"]
-    s3_bucket = st.secrets["AWS_S3_BUCKET_NAME"]
-else:
-    st.sidebar.subheader("AWS Credentials")
-    aws_access_key = st.sidebar.text_input("AWS Access Key ID", type="password")
-    aws_secret_key = st.sidebar.text_input("AWS Secret Access Key", type="password")
-    aws_region = st.sidebar.text_input("AWS Region", value="us-east-1")
-    s3_bucket = st.sidebar.text_input("S3 Bucket Name")
-
-if not all([groq_api_key, pinecone_api_key, aws_access_key, aws_secret_key, aws_region, s3_bucket]):
-    st.info("Please configure all API Keys and AWS Credentials to continue.")
+# Fetch status from backend
+try:
+    status_res = requests.get(f"{BACKEND_URL}/status").json()
+    has_vectors = status_res.get("has_vectors", False)
+except Exception:
+    st.error("Could not connect to the backend server.")
     st.stop()
-
-# 2. Caching resource generation inside the Streamlit context
-@st.cache_resource
-def load_cached_embeddings():
-    return rag_logic.get_embeddings()
-
-embeddings = load_cached_embeddings()
-
-# 3. Initialize Clients
-pc = rag_logic.init_pinecone(pinecone_api_key)
-s3_client = rag_logic.get_s3_client(aws_access_key, aws_secret_key, aws_region)
 
 # Sidebar Uploader
 st.sidebar.header("Upload your Documents")
@@ -54,38 +23,20 @@ uploaded_files = st.sidebar.file_uploader("Upload PDFs", type="pdf", accept_mult
 
 if uploaded_files:
     for uploaded_file in uploaded_files:
-        # Save files inside a /documents folder in S3
-        s3_key = f"documents/{uploaded_file.name}"
-        
-        with st.spinner(f"Uploading {uploaded_file.name} to S3 and indexing..."):
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                tmp_file.write(uploaded_file.getvalue())
-                tmp_path = tmp_file.name
-            
-            try:
-                # A. Write PDF to AWS S3 bucket
-                uploaded = rag_logic.upload_to_s3(tmp_path, s3_bucket, s3_key, s3_client)
-                
-                if uploaded:
-                    # B. Chunk, vectorize and save references on Pinecone
-                    rag_logic.process_and_upload_pdf(tmp_path, embeddings, pinecone_api_key, s3_bucket, s3_key)
-                    st.sidebar.success(f"Indexed: {uploaded_file.name} (Saved on S3)")
-                else:
-                    st.sidebar.error(f"S3 upload failed for: {uploaded_file.name}")
-            finally:
-                os.unlink(tmp_path)
+        with st.spinner(f"Uploading {uploaded_file.name}..."):
+            files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "application/pdf")}
+            res = requests.post(f"{BACKEND_URL}/upload", files=files)
+            if res.status_code == 200:
+                st.sidebar.success(f"Indexed: {uploaded_file.name}")
+            else:
+                st.sidebar.error(f"Failed to process {uploaded_file.name}")
 
-# Load vector store instance
-vector_store = rag_logic.get_vector_store(embeddings, pinecone_api_key)
-
-# Administration options
-if st.sidebar.button("Clear Pinecone Database"):
-    with st.spinner("Clearing index..."):
-        rag_logic.clear_database(pc)
-    st.sidebar.warning("Database cleared! Please reload the page.")
+# Clear DB Option
+if st.sidebar.button("Clear Database"):
+    with st.spinner("Clearing backend index..."):
+        requests.post(f"{BACKEND_URL}/clear")
+    st.sidebar.warning("Database cleared! Reloading...")
     st.rerun()
-
-has_vectors = rag_logic.check_index_has_vectors(pc)
 
 # Chat Interface
 if has_vectors:
@@ -103,8 +54,12 @@ if has_vectors:
 
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                answer = rag_logic.query_rag(user_query, vector_store, groq_api_key)
+                res = requests.post(f"{BACKEND_URL}/query", json={"query": user_query})
+                if res.status_code == 200:
+                    answer = res.json().get("answer")
+                else:
+                    answer = "Error querying backend."
                 st.markdown(answer)
         st.session_state.messages.append({"role": "assistant", "content": answer})
 else:
-    st.info("No documents found in Pinecone. Please upload one or more PDFs in the sidebar.")
+    st.info("No documents found in backend. Please upload one or more PDFs in the sidebar.")
