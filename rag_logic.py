@@ -35,14 +35,19 @@ def init_pinecone(api_key: str) -> Pinecone:
             time.sleep(1)
     return pc
 
-def get_s3_client(aws_access_key: str, aws_secret_key: str, region: str):
+def get_s3_client(aws_access_key: str = None, aws_secret_key: str = None, region: str = None):
     """Initializes and returns the AWS S3 client."""
-    return boto3.client(
-        's3',
-        aws_access_key_id=aws_access_key,
-        aws_secret_access_key=aws_secret_key,
-        region_name=region
-    )
+    if aws_access_key and aws_secret_key:
+        # Fallback for local development using manual keys
+        return boto3.client(
+            's3',
+            aws_access_key_id=aws_access_key,
+            aws_secret_access_key=aws_secret_key,
+            region_name=region
+        )
+    else:
+        # Production standard: automatically uses the ECS IAM Task Role
+        return boto3.client('s3', region_name=region)
 
 def upload_to_s3(local_file_path: str, bucket_name: str, s3_key: str, s3_client) -> bool:
     """Uploads a local temporary file directly to S3."""
