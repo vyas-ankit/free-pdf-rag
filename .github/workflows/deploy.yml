@@ -3,7 +3,7 @@ name: Build and Push to Amazon ECR
 on:
   push:
     branches:
-      - main  # Triggers the build whenever you push to the main branch
+      - first_branch  # Triggers the build whenever you push to the main branch
 
 jobs:
   build-and-push:
