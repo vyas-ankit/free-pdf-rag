@@ -1,12 +1,15 @@
-name: Build and Push to Amazon ECR
+name: Build and Deploy to Amazon ECS
 
 on:
   push:
     branches:
-      - first_branch  # Triggers the build whenever you push to the main branch
+      - first-branch # Triggers the build on any branch push
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  build-and-push:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
@@ -18,13 +21,13 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1  # Replace with your AWS region
+          aws-region: us-east-1
 
       - name: Log in to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # 1. Build and Push Backend
+      # 1. Build and Push Backend Image to ECR
       - name: Build and Push Backend Image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -34,7 +37,7 @@ jobs:
           docker build -f Dockerfile.backend -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
-      # 2. Build and Push Frontend
+      # 2. Build and Push Frontend Image to ECR
       - name: Build and Push Frontend Image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
@@ -43,3 +46,21 @@ jobs:
         run: |
           docker build -f Dockerfile.frontend -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+      # 3. Force ECS Backend Service to pull the new ECR image
+      - name: Deploy Backend Update to ECS
+        run: |
+          aws ecs update-service \
+            --cluster default \
+            --service rag-backend-9ddc \
+            --force-new-deployment \
+            --region us-east-1
+
+      # 4. Force ECS Frontend Service to pull the new ECR image
+      - name: Deploy Frontend Update to ECS
+        run: |
+          aws ecs update-service \
+            --cluster default \
+            --service rag-frontend-62fd \
+            --force-new-deployment \
+            --region us-east-1
