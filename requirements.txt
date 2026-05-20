@@ -1,4 +1,13 @@
+# Frontend
 streamlit
+requests
+
+# Backend API
+fastapi
+uvicorn
+python-multipart
+
+# RAG & LLM Logic
 langchain
 langchain-community
 langchain-groq
