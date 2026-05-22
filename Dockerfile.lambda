@@ -2,7 +2,7 @@ FROM public.ecr.aws/lambda/python:3.11
 
 # Copy requirements-lambda and install
 COPY requirements-lambda.txt ${LAMBDA_TASK_ROOT}
-RUN pip install --no-cache-dir -r requirements-lambda.txt
+RUN pip install --no-cache-dir --only-binary=:all: -r requirements-lambda.txt
 
 # Copy logic and handler
 COPY lambda_function.py ${LAMBDA_TASK_ROOT}
