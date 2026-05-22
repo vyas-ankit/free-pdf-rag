@@ -1,3 +1,6 @@
+# Pin NumPy to a pre-compiled stable version for AWS Lambda compatibility
+numpy==1.26.4
+
 # Frontend
 streamlit
 requests
