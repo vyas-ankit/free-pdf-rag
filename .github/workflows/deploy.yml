@@ -3,7 +3,7 @@ name: Build and Deploy to Amazon ECS
 on:
   push:
     branches:
-      - first_branch # Triggers the build on any branch push
+      - first_branch # Triggers the build on your active branch push
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -47,7 +47,17 @@ jobs:
           docker build -f Dockerfile.frontend -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
 
-      # 3. Force ECS Backend Service to pull the new ECR image
+      # 3. Build and Push Ingestion Lambda Image to ECR (New Step)
+      - name: Build and Push Lambda Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: rag-lambda  # (Make sure you created 'rag-lambda' repository in ECR)
+          IMAGE_TAG: latest
+        run: |
+          docker build -f Dockerfile.lambda -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+
+      # 4. Force ECS Backend Service to pull the new ECR image
       - name: Deploy Backend Update to ECS
         run: |
           aws ecs update-service \
@@ -56,11 +66,21 @@ jobs:
             --force-new-deployment \
             --region us-east-1
 
-      # 4. Force ECS Frontend Service to pull the new ECR image
+      # 5. Force ECS Frontend Service to pull the new ECR image
       - name: Deploy Frontend Update to ECS
         run: |
           aws ecs update-service \
             --cluster default \
             --service rag-frontend-62fd \
             --force-new-deployment \
+            --region us-east-1
+
+      # 6. Force AWS Lambda to pull the new ECR container image (New Step)
+      - name: Deploy Ingestion Pipeline Update to Lambda
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          aws lambda update-function-code \
+            --function-name rag-ingestion-pipeline \
+            --image-uri $ECR_REGISTRY/rag-lambda:latest \
             --region us-east-1

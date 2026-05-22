@@ -36,9 +36,9 @@ def init_pinecone(api_key: str) -> Pinecone:
     return pc
 
 def get_s3_client(aws_access_key: str = None, aws_secret_key: str = None, region: str = None):
-    """Initializes and returns the AWS S3 client."""
+    """Initializes and returns the AWS S3 client.
+    Supports both manual keys (local) and IAM Task Roles (production)."""
     if aws_access_key and aws_secret_key:
-        # Fallback for local development using manual keys
         return boto3.client(
             's3',
             aws_access_key_id=aws_access_key,
@@ -46,7 +46,6 @@ def get_s3_client(aws_access_key: str = None, aws_secret_key: str = None, region
             region_name=region
         )
     else:
-        # Production standard: automatically uses the ECS IAM Task Role
         return boto3.client('s3', region_name=region)
 
 def upload_to_s3(local_file_path: str, bucket_name: str, s3_key: str, s3_client) -> bool:
@@ -58,15 +57,22 @@ def upload_to_s3(local_file_path: str, bucket_name: str, s3_key: str, s3_client)
         print(f"S3 Upload Error: {e}")
         return False
 
-def process_and_upload_pdf(local_file_path: str, embeddings, pinecone_api_key: str, s3_bucket: str, s3_key: str):
-    """Loads a PDF, chunks it, sets S3 path metadata, and saves vectors to Pinecone."""
+def process_and_upload_pdf(
+    local_file_path: str, 
+    embeddings, 
+    pinecone_api_key: str, 
+    s3_bucket: str, 
+    s3_key: str, 
+    required_role: str = "Public"
+):
+    """Loads a PDF, chunks it, sets S3 path and security metadata, and saves to Pinecone."""
     loader = PyPDFLoader(local_file_path)
     documents = loader.load()
     
-    # Force document metadata source to use S3 URI
     s3_uri = f"s3://{s3_bucket}/{s3_key}"
     for doc in documents:
         doc.metadata["source"] = s3_uri
+        doc.metadata["required_role"] = required_role
         
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     splits = text_splitter.split_documents(documents)
@@ -99,12 +105,29 @@ def clear_database(pc: Pinecone):
 def format_docs(docs) -> str:
     return "\n\n".join(doc.page_content for doc in docs)
 
-def query_rag(user_query: str, vector_store: PineconeVectorStore, groq_api_key: str) -> str:
-    retriever = vector_store.as_retriever(search_kwargs={"k": 3})
-    llm = ChatGroq(model="llama-3.1-8b-instant", groq_api_key=groq_api_key)
+def query_rag(
+    user_query: str, 
+    vector_store: PineconeVectorStore, 
+    groq_api_key: str,
+    user_id: str = "guest_user",
+    session_id: str = "default_session",
+    user_role: str = "Public",
+    retrieval_k: int = 3,
+    prompt_template: str = SYSTEM_RAG_PROMPT,
+    model_name: str = "llama-3.1-8b-instant"
+) -> str:
+    # Enforce metadata filtering on retrieval
+    retriever = vector_store.as_retriever(
+        search_kwargs={
+            "k": retrieval_k,
+            "filter": {"required_role": user_role}
+        }
+    )
+    
+    llm = ChatGroq(model=model_name, groq_api_key=groq_api_key)
     
     prompt = ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_RAG_PROMPT),
+        ("system", prompt_template),
         ("human", "{input}"),
     ])
     
@@ -114,4 +137,15 @@ def query_rag(user_query: str, vector_store: PineconeVectorStore, groq_api_key: 
         | llm
         | StrOutputParser()
     )
-    return rag_chain.invoke(user_query)
+    
+    config = {
+        "metadata": {
+            "user_id": user_id,
+            "session_id": session_id,
+            "user_role": user_role,
+            "retrieval_k": retrieval_k,
+            "model_name": model_name,
+            "prompt_version": hash(prompt_template)
+        }
+    }
+    return rag_chain.invoke(user_query, config=config)

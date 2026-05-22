@@ -1,0 +1,21 @@
+# .dockerignore
+.git
+.github
+
+# Ignore evaluation and ingestion scripts
+evaluate.py
+ingest_docs.py
+
+# Ignore Lambda files for backend/frontend builds
+lambda_function.py
+Dockerfile.lambda
+
+# Ignore local test directory
+local_test/
+temp_*
+
+# Ignore local credentials or environment files
+.env
+.venv/
+__pycache__/
+*.pyc
