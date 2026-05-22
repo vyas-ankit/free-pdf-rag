@@ -1,7 +1,6 @@
-# requirements-lambda.txt
-# Lightweight dependencies strictly for S3-to-Pinecone ingestion
-
+# Locked binary wheels for AWS Lambda compatibility
 numpy==1.26.4
+scikit-learn==1.3.2
 
 # RAG & Ingestion Logic
 langchain==0.3.1
