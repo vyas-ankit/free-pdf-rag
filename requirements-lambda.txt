@@ -1,0 +1,13 @@
+# requirements-lambda.txt
+# Lightweight dependencies strictly for S3-to-Pinecone ingestion
+
+numpy==1.26.4
+
+# RAG & Ingestion Logic
+langchain==0.3.1
+langchain-community==0.3.1
+langchain-groq==0.2.0
+langchain-pinecone==0.2.0
+pinecone==5.0.1
+sentence-transformers==3.0.1
+pypdf==4.3.1
