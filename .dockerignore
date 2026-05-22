@@ -7,7 +7,7 @@ evaluate.py
 ingest_docs.py
 
 # Ignore Lambda files for backend/frontend builds
-lambda_function.py
+# lambda_function.py
 Dockerfile.lambda
 
 # Ignore local test directory
