@@ -1,4 +1,28 @@
 # lambda_function.py
+
+# Patch for AWS Lambda: Lambda's sandbox blocks POSIX semaphores.
+# Replace multiprocessing.pool.ThreadPool with a threading-based executor.
+import concurrent.futures
+
+class _ThreadPoolPatch:
+    def __init__(self, processes=None, *args, **kwargs):
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=processes or 1)
+
+    def apply_async(self, func, args=(), kwds={}, callback=None, error_callback=None):
+        future = self._executor.submit(func, *args, **kwds)
+        class AsyncResult:
+            def get(self, timeout=None):
+                return future.result(timeout=timeout)
+        return AsyncResult()
+
+    def close(self): pass
+    def join(self): pass
+    def terminate(self): pass
+
+import multiprocessing.pool
+multiprocessing.pool.ThreadPool = _ThreadPoolPatch
+
+# --- Normal imports below ---
 import os
 import urllib.parse
 import boto3
@@ -8,7 +32,6 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone
 
-# 1. Initialize AWS Clients inside Lambda
 s3_client = boto3.client('s3')
 ssm_client = boto3.client('ssm')
 
@@ -16,7 +39,6 @@ INDEX_NAME = "free-pdf-index"
 
 def lambda_handler(event, context):
     try:
-        # 2. Extract S3 Bucket and Key from the trigger event
         bucket_name = event['Records'][0]['s3']['bucket']['name']
         s3_key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
         
@@ -26,30 +48,22 @@ def lambda_handler(event, context):
             print("[+] File is not a PDF in the 'documents/' folder. Skipping.")
             return {"statusCode": 200, "body": "Skipped non-target file"}
 
-        # 3. Pull Pinecone API Key from SSM Parameter Store
         print("[~] Fetching Pinecone API Key from SSM Parameter Store...")
         parameter = ssm_client.get_parameter(Name="/rag-app/pinecone-api-key", WithDecryption=True)
         pinecone_api_key = parameter['Parameter']['Value']
 
-        # 4. Download PDF from S3 into /tmp
         local_temp_path = f"/tmp/{os.path.basename(s3_key)}"
         print(f"[~] Downloading s3://{bucket_name}/{s3_key} to {local_temp_path}...")
         s3_client.download_file(bucket_name, s3_key, local_temp_path)
 
-        # 5. Initialize Embeddings and Pinecone
         print("[~] Initializing embedding model and Pinecone...")
         embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        pc = Pinecone(api_key=pinecone_api_key)
 
-        # pool_threads=1 avoids POSIX semaphore creation which Lambda's sandbox blocks
-        pc = Pinecone(api_key=pinecone_api_key, pool_threads=1)
-        index = pc.Index(INDEX_NAME)
-
-        # 6. Load, Chunk, and Index the PDF
         print("[~] Loading and chunking PDF...")
         loader = PyPDFLoader(local_temp_path)
         documents = loader.load()
         
-        # Inject metadata
         s3_uri = f"s3://{bucket_name}/{s3_key}"
         for doc in documents:
             doc.metadata["source"] = s3_uri
@@ -63,11 +77,9 @@ def lambda_handler(event, context):
             documents=splits,
             embedding=embeddings,
             index_name=INDEX_NAME,
-            pinecone_api_key=pinecone_api_key,
-            index=index
+            pinecone_api_key=pinecone_api_key
         )
 
-        # 7. Clean up
         os.remove(local_temp_path)
         print("[+] Ingestion complete!")
         return {"statusCode": 200, "body": f"Successfully processed {s3_key}"}
