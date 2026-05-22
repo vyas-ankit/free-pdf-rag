@@ -9,6 +9,7 @@ requests
 fastapi
 uvicorn
 python-multipart
+redis
 
 # RAG & LLM Logic
 langchain

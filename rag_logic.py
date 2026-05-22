@@ -3,6 +3,8 @@
 import os
 import time
 import boto3
+from langchain_core.globals import set_llm_cache                    # <── Added for cache
+from langchain_community.cache import RedisSemanticCache             # <── Added for cache
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -18,6 +20,21 @@ INDEX_NAME = "free-pdf-index"
 
 def get_embeddings():
     return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+def init_semantic_cache(embeddings):
+    """Initializes the global semantic cache if REDIS_URL is present."""
+    redis_url = os.getenv("REDIS_URL")
+    if redis_url:
+        print(f"[~] Initializing global Redis Semantic Cache...")
+        set_llm_cache(
+            RedisSemanticCache(
+                redis_url=redis_url,
+                embedding=embeddings,
+                score_threshold=0.05  # Lower threshold = stricter semantic match requirement
+            )
+        )
+    else:
+        print("[!] REDIS_URL not found. Running without semantic cache.")
 
 def init_pinecone(api_key: str) -> Pinecone:
     pc = Pinecone(api_key=api_key)
