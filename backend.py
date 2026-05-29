@@ -19,7 +19,7 @@ app.add_middleware(
 )
 
 # Read variables directly on the backend
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+LLM_API_KEY = os.getenv("LLM_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("GROQ_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 AWS_REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
 S3_BUCKET = os.getenv("AWS_S3_BUCKET_NAME")
@@ -88,7 +88,7 @@ def query_endpoint(body: QueryRequest):
         answer = rag_logic.query_rag(
             body.query, 
             vector_store, 
-            GROQ_API_KEY, 
+            LLM_API_KEY, 
             user_id=body.user_id, 
             session_id=body.session_id,
             user_role=body.user_role

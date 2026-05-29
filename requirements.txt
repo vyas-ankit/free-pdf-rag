@@ -15,6 +15,7 @@ redis
 langchain
 langchain-community
 langchain-groq
+langchain-google-genai
 langchain-pinecone
 pinecone
 boto3

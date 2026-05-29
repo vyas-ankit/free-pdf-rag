@@ -9,7 +9,7 @@ import rag_logic
 
 def main():
     # 1. Retrieve all API keys and AWS credentials from system environment variables
-    groq_api_key = os.getenv("GROQ_API_KEY")
+    llm_api_key = os.getenv("LLM_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("GROQ_API_KEY")
     pinecone_api_key = os.getenv("PINECONE_API_KEY")
     
     aws_access_key = os.getenv("AWS_ACCESS_KEY_ID")
@@ -19,7 +19,7 @@ def main():
 
     # Verify all required variables are set
     missing_vars = []
-    if not groq_api_key: missing_vars.append("GROQ_API_KEY")
+    if not llm_api_key: missing_vars.append("LLM_API_KEY or GOOGLE_API_KEY")
     if not pinecone_api_key: missing_vars.append("PINECONE_API_KEY")
     if not aws_access_key: missing_vars.append("AWS_ACCESS_KEY_ID")
     if not aws_secret_key: missing_vars.append("AWS_SECRET_ACCESS_KEY")
@@ -109,7 +109,7 @@ def main():
                     answer = rag_logic.query_rag(
                         user_query, 
                         vector_store, 
-                        groq_api_key, 
+                        llm_api_key, 
                         user_role=user_role
                     )
                     print(f"\nAssistant: {answer}")

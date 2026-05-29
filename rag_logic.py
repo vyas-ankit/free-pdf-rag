@@ -15,19 +15,18 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
-from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages                                  
 from langgraph.prebuilt import ToolNode, tools_condition                         
+from llm import get_llm, get_default_model
 from prompts import SYSTEM_RAG_PROMPT, QUERY_REWRITER_PROMPT, INTENT_CLASSIFIER_PROMPT
 
 INDEX_NAME = "free-pdf-index"
 
-# ─── CENTRALIZED MODEL CONFIGURATION ───
-ACTIVE_LLM_MODEL = "llama-3.3-70b-versatile" 
+ACTIVE_LLM_MODEL = get_default_model()
 
 # In-memory session memory to preserve the message thread across turns
 SESSION_MEMORY: List[BaseMessage] = []
@@ -71,7 +70,7 @@ class AgentState(TypedDict):
     query_intent: str
     user_id: str
     user_role: str
-    groq_api_key: str
+    llm_api_key: str
     vector_store: PineconeVectorStore
     retrieval_k: int
     prompt_template: str
@@ -88,9 +87,9 @@ def query_rewriter_node(state: AgentState):
     if not chat_history:
         return {"rewritten_query": state["user_query"]}
         
-    llm = ChatGroq(
+    llm = get_llm(
         model=state.get("model_name", ACTIVE_LLM_MODEL),
-        groq_api_key=state.get("groq_api_key") or os.getenv("GROQ_API_KEY")
+        llm_api_key=state.get("llm_api_key")
     )
     prompt = ChatPromptTemplate.from_messages([
         ("system", QUERY_REWRITER_PROMPT),
@@ -104,9 +103,9 @@ def query_rewriter_node(state: AgentState):
 
 def intent_classifier_node(state: AgentState):
     """Classifies the rewritten query as 'action' or 'knowledge' using the XML-formatted prompt."""
-    llm = ChatGroq(
+    llm = get_llm(
         model=state.get("model_name", ACTIVE_LLM_MODEL),
-        groq_api_key=state.get("groq_api_key") or os.getenv("GROQ_API_KEY")
+        llm_api_key=state.get("llm_api_key")
     )
     structured_llm = llm.with_structured_output(IntentClassification)
     
@@ -140,9 +139,9 @@ def intent_classifier_node(state: AgentState):
 # --- NATIVE TOOL-CALLING NODE ---
 def action_executor_node(state: AgentState):
     """Agent node equipped with tools to handle desk booking conversational loops."""
-    llm = ChatGroq(
+    llm = get_llm(
         model=state.get("model_name", ACTIVE_LLM_MODEL),
-        groq_api_key=state.get("groq_api_key") or os.getenv("GROQ_API_KEY")
+        llm_api_key=state.get("llm_api_key")
     )
     llm_with_tools = llm.bind_tools(tools) # Bind tools to the model
     
@@ -172,9 +171,9 @@ def action_executor_node(state: AgentState):
 
 def knowledge_executor_node(state: AgentState):
     """Executes secure, role-based vector retrieval and RAG response generation."""
-    llm = ChatGroq(
+    llm = get_llm(
         model=state.get("model_name", ACTIVE_LLM_MODEL),
-        groq_api_key=state.get("groq_api_key") or os.getenv("GROQ_API_KEY")
+        llm_api_key=state.get("llm_api_key")
     )
     vector_store = state["vector_store"]
     user_role = state.get("user_role", "Public")
@@ -365,7 +364,7 @@ def format_docs(docs) -> str:
 def query_rag(
     user_query: str, 
     vector_store: PineconeVectorStore, 
-    groq_api_key: str,
+    llm_api_key: str = None,
     user_id: str = "guest_user",
     session_id: str = "default_session",
     user_role: str = "Public",
@@ -385,7 +384,7 @@ def query_rag(
         "messages": messages,          
         "user_id": user_id,
         "user_role": user_role,
-        "groq_api_key": groq_api_key,
+        "llm_api_key": llm_api_key,
         "vector_store": vector_store,
         "retrieval_k": retrieval_k,
         "prompt_template": prompt_template or SYSTEM_RAG_PROMPT,
