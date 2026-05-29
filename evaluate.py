@@ -1,10 +1,14 @@
 # evaluate.py
 
 import os
+from dotenv import load_dotenv
 from langsmith import Client
 from langsmith.evaluation import evaluate, LangChainStringEvaluator
 from langchain_groq import ChatGroq
 import rag_logic
+import rag_logic_v1
+
+load_dotenv()
 
 # 1. Verify local keys are set before running
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
@@ -46,22 +50,22 @@ coherence_evaluator = LangChainStringEvaluator(
 evaluators_list = [correctness_evaluator, coherence_evaluator]
 
 
-# --- EXPERIMENT A: Standard Configuration ---
-def predict_config_a(inputs: dict):
-    response = rag_logic.query_rag(
+# --- EXPERIMENT A: Baseline LCEL RAG implementation ---
+def predict_v1_baseline(inputs: dict):
+    response = rag_logic_v1.query_rag(
         user_query=inputs["question"],
         vector_store=vector_store,
         groq_api_key=GROQ_API_KEY,
-        user_role="Public",  # Standard baseline
+        user_role="Public",
         retrieval_k=3,
-        prompt_template=rag_logic.SYSTEM_RAG_PROMPT,
+        prompt_template=rag_logic_v1.SYSTEM_RAG_PROMPT,
         model_name="llama-3.1-8b-instant"
     )
     return {"output": response}
 
 
-# --- EXPERIMENT B: High-context & Strict Prompt Configuration ---
-def predict_config_b(inputs: dict):
+# --- EXPERIMENT B: Agentic LangGraph implementation ---
+def predict_agentic_strict(inputs: dict):
     experimental_prompt = (
         "You are a strict, highly detailed document auditor. "
         "Use ONLY the following context to answer the question. "
@@ -73,29 +77,29 @@ def predict_config_b(inputs: dict):
         vector_store=vector_store,
         groq_api_key=GROQ_API_KEY,
         user_role="Public",
-        retrieval_k=5,  # Fetch more context (k=5)
+        retrieval_k=5,
         prompt_template=experimental_prompt,
-        model_name="llama-3.1-8b-instant"
+        model_name=rag_logic.ACTIVE_LLM_MODEL
     )
     return {"output": response}
 
 
 # Run evaluations in LangSmith
 try:
-    print("\n[~] Running Experiment A (Standard) with automated judges...")
+    print("\n[~] Running Experiment A (V1 Baseline) with automated judges...")
     evaluate(
-        predict_config_a,
-        data="rag-evaluation-suite",  # Pulls the CSV dataset you uploaded
-        evaluators=evaluators_list,   # Applies both correctness & coherence
-        experiment_prefix="Config-A-Standard",
+        predict_v1_baseline,
+        data="rag-evaluation-suite",
+        evaluators=evaluators_list,
+        experiment_prefix="V1-Baseline-Standard",
     )
     
-    print("\n[~] Running Experiment B (High-Context-Strict) with automated judges...")
+    print("\n[~] Running Experiment B (Agentic Strict K5) with automated judges...")
     evaluate(
-        predict_config_b,
+        predict_agentic_strict,
         data="rag-evaluation-suite",
-        evaluators=evaluators_list,   # Applies both correctness & coherence
-        experiment_prefix="Config-B-Strict-K5",
+        evaluators=evaluators_list,
+        experiment_prefix="Agentic-Strict-K5",
     )
     print("\n[+] Evaluation completed successfully! Check your LangSmith Dashboard.")
 except Exception as e:

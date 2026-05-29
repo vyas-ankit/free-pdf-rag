@@ -26,8 +26,6 @@ S3_BUCKET = os.getenv("AWS_S3_BUCKET_NAME")
 
 # Initialize RAG resources
 embeddings = rag_logic.get_embeddings()
-
-# ─── ADDED: Initialize the global semantic cache on startup ───
 rag_logic.init_semantic_cache(embeddings)
 
 pc = rag_logic.init_pinecone(PINECONE_API_KEY)
@@ -38,7 +36,7 @@ class QueryRequest(BaseModel):
     query: str
     user_id: str = "anonymous_user"
     session_id: str = "default_session"
-    user_role: str = "Public"  # Add user_role (defaults to 'Public')
+    user_role: str = "Public"
 
 @app.get("/")
 def health_check():
@@ -54,7 +52,7 @@ def get_status():
 @app.post("/upload")
 async def upload_file(
     file: UploadFile = File(...), 
-    required_role: str = Form("Public")  # Accept security role via multipart form field
+    required_role: str = Form("Public")
 ):
     """Upload PDF to S3 and process into Pinecone with role-based metadata."""
     temp_path = f"temp_{file.filename}"
@@ -68,7 +66,6 @@ async def upload_file(
         if not uploaded:
             raise HTTPException(status_code=500, detail="Failed to upload file to S3.")
             
-        # Pass the required role during indexing
         rag_logic.process_and_upload_pdf(
             temp_path, 
             embeddings, 
@@ -88,7 +85,6 @@ async def upload_file(
 def query_endpoint(body: QueryRequest):
     """Query the RAG pipeline enforcing role-based filtering."""
     try:
-        # Pass the user's role to the query function
         answer = rag_logic.query_rag(
             body.query, 
             vector_store, 

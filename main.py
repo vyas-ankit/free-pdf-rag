@@ -2,7 +2,10 @@
 
 import os
 import sys
+from dotenv import load_dotenv
+load_dotenv()
 import rag_logic
+
 
 def main():
     # 1. Retrieve all API keys and AWS credentials from system environment variables
@@ -35,7 +38,7 @@ def main():
     embeddings = rag_logic.get_embeddings()
     pc = rag_logic.init_pinecone(pinecone_api_key)
     
-    # Initialize S3 client
+    # Initialize S3 client (Supports explicit keys on your local machine)
     s3_client = rag_logic.get_s3_client(aws_access_key, aws_secret_key, aws_region)
     vector_store = rag_logic.get_vector_store(embeddings, pinecone_api_key)
     print("[+] System Ready.")
@@ -59,6 +62,8 @@ def main():
                 print(f"[-] Error: File '{pdf_path}' not found.")
                 continue
             
+            required_role = input("Enter required access role for this PDF (Public/Finance, default is Public): ").strip() or "Public"
+            
             file_name = os.path.basename(pdf_path)
             s3_key = f"documents/{file_name}"
             
@@ -70,8 +75,15 @@ def main():
                 if uploaded:
                     print("[~] 2. Processing and indexing in Pinecone...")
                     # Process the local file and save reference to S3 inside metadata
-                    rag_logic.process_and_upload_pdf(pdf_path, embeddings, pinecone_api_key, s3_bucket, s3_key)
-                    print("[+] Ingestion complete! File securely archived on S3 & indexed on Pinecone.")
+                    rag_logic.process_and_upload_pdf(
+                        pdf_path, 
+                        embeddings, 
+                        pinecone_api_key, 
+                        s3_bucket, 
+                        s3_key, 
+                        required_role=required_role
+                    )
+                    print(f"[+] Ingestion complete! File securely archived on S3 & indexed on Pinecone as '{required_role}'.")
                 else:
                     print("[-] Ingestion failed during S3 upload step.")
             except Exception as e:
@@ -81,8 +93,10 @@ def main():
             if not rag_logic.check_index_has_vectors(pc):
                 print("[-] Error: Your database is empty. Please index a PDF first.")
                 continue
-                
-            print("\nEntering Chat Mode (type 'exit' or 'quit' to go back)...")
+            
+            user_role = input("\nEnter your authorized user role (Public/Finance, default is Public): ").strip() or "Public"
+            print(f"\nEntering Chat Mode as '{user_role}' (type 'exit' or 'quit' to go back)...")
+            
             while True:
                 user_query = input("\nYou: ").strip()
                 if user_query.lower() in ["exit", "quit"]:
@@ -92,7 +106,12 @@ def main():
                 
                 print("Assistant is thinking...")
                 try:
-                    answer = rag_logic.query_rag(user_query, vector_store, groq_api_key)
+                    answer = rag_logic.query_rag(
+                        user_query, 
+                        vector_store, 
+                        groq_api_key, 
+                        user_role=user_role
+                    )
                     print(f"\nAssistant: {answer}")
                 except Exception as e:
                     print(f"[-] Query failed: {e}")

@@ -1,7 +1,17 @@
 # ingest_docs.py
 
 import os
-import rag_logic
+from dotenv import load_dotenv
+
+load_dotenv()
+
+RAG_LOGIC_VERSION = os.getenv("RAG_LOGIC_VERSION", "agentic").strip().lower()
+if RAG_LOGIC_VERSION == "v1":
+    import rag_logic_v1 as rag_logic
+    ACTIVE_RAG_LOGIC = "v1"
+else:
+    import rag_logic
+    ACTIVE_RAG_LOGIC = "agentic"
 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 
@@ -10,7 +20,7 @@ if not PINECONE_API_KEY:
     exit(1)
 
 # 1. Initialize local Pinecone client
-print("[~] Connecting to Pinecone...")
+print(f"[~] Connecting to Pinecone using RAG logic: {ACTIVE_RAG_LOGIC}...")
 embeddings = rag_logic.get_embeddings()
 pc = rag_logic.init_pinecone(PINECONE_API_KEY)
 
@@ -41,7 +51,7 @@ for doc in new_docs:
             pinecone_api_key=PINECONE_API_KEY,
             s3_bucket="local-test-bucket",
             s3_key=doc["path"],
-            required_role=doc["role"]  # Tags the chunks with the correct access role
+            required_role=doc["role"]
         )
     else:
         print(f"[-] Error: File '{doc['path']}' not found in 'local_test' folder. Skip.")
