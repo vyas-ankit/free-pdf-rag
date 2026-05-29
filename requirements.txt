@@ -20,3 +20,5 @@ pinecone
 boto3
 sentence-transformers
 pypdf
+langgraph
+python-dotenv
