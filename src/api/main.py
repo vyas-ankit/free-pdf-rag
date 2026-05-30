@@ -4,22 +4,28 @@ import os
 import sys
 from dotenv import load_dotenv
 load_dotenv()
-import rag_logic
+from src.core import rag_logic
 
 
 def main():
-    # 1. Retrieve all API keys and AWS credentials from system environment variables
-    llm_api_key = os.getenv("LLM_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("GROQ_API_KEY")
+    # 1. Validate required env vars (LLM key is resolved per-provider inside get_llm)
     pinecone_api_key = os.getenv("PINECONE_API_KEY")
-    
+
     aws_access_key = os.getenv("AWS_ACCESS_KEY_ID")
     aws_secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
     aws_region = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
     s3_bucket = os.getenv("AWS_S3_BUCKET_NAME")
 
+    # Confirm the active provider has its API key set
+    from src.core.llm import get_llm_provider, get_llm_api_key
+    active_provider = get_llm_provider()
+    if not get_llm_api_key(provider=active_provider):
+        provider_env = f"{active_provider.upper()}_API_KEY"
+        print(f"\n[-] Error: Missing {provider_env} for active provider '{active_provider}'.")
+        sys.exit(1)
+
     # Verify all required variables are set
     missing_vars = []
-    if not llm_api_key: missing_vars.append("LLM_API_KEY or GOOGLE_API_KEY")
     if not pinecone_api_key: missing_vars.append("PINECONE_API_KEY")
     if not aws_access_key: missing_vars.append("AWS_ACCESS_KEY_ID")
     if not aws_secret_key: missing_vars.append("AWS_SECRET_ACCESS_KEY")
@@ -71,21 +77,29 @@ def main():
             try:
                 # Upload the PDF to S3
                 uploaded = rag_logic.upload_to_s3(pdf_path, s3_bucket, s3_key, s3_client)
-                
-                if uploaded:
-                    print("[~] 2. Processing and indexing in Pinecone...")
-                    # Process the local file and save reference to S3 inside metadata
-                    rag_logic.process_and_upload_pdf(
-                        pdf_path, 
-                        embeddings, 
-                        pinecone_api_key, 
-                        s3_bucket, 
-                        s3_key, 
-                        required_role=required_role
-                    )
-                    print(f"[+] Ingestion complete! File securely archived on S3 & indexed on Pinecone as '{required_role}'.")
-                else:
+
+                if not uploaded:
                     print("[-] Ingestion failed during S3 upload step.")
+                    continue
+
+                # Run extraction pipeline (PDF → chunks_with_metadata.json)
+                print("[~] 2. Running extraction pipeline...")
+                from src.utils.run_pipeline import run_full_pipeline
+                result = run_full_pipeline(pdf_path=pdf_path, output_base_folder="data/processed")
+                if not result:
+                    print("[-] Extraction pipeline failed.")
+                    continue
+
+                # Ingest chunks into Pinecone
+                print("[~] 3. Ingesting chunks into Pinecone...")
+                count = rag_logic.ingest_chunks_from_json(
+                    chunks_json_path=result["output_json"],
+                    embeddings=embeddings,
+                    pinecone_api_key=pinecone_api_key,
+                    required_role=required_role,
+                    replace_existing=True,
+                )
+                print(f"[+] Ingestion complete! {count} chunks indexed in Pinecone as '{required_role}'.")
             except Exception as e:
                 print(f"[-] Processing failed: {e}")
                 
@@ -107,9 +121,8 @@ def main():
                 print("Assistant is thinking...")
                 try:
                     answer = rag_logic.query_rag(
-                        user_query, 
-                        vector_store, 
-                        llm_api_key, 
+                        user_query,
+                        vector_store,
                         user_role=user_role
                     )
                     print(f"\nAssistant: {answer}")

@@ -1,0 +1,16 @@
+FROM public.ecr.aws/lambda/python:3.11
+
+# Copy requirements-lambda and install
+COPY deployment/docker/requirements-lambda.txt ${LAMBDA_TASK_ROOT}
+RUN pip install --no-cache-dir --only-binary=:all: -r requirements-lambda.txt
+
+# Copy logic and handler
+COPY src/api/lambda_function.py ${LAMBDA_TASK_ROOT}
+COPY src/core/rag_logic.py ${LAMBDA_TASK_ROOT}
+COPY src/core/prompts.py ${LAMBDA_TASK_ROOT}
+COPY src/core/llm.py ${LAMBDA_TASK_ROOT}
+COPY src/core/config.py ${LAMBDA_TASK_ROOT}
+COPY config/llm_config.json ${LAMBDA_TASK_ROOT}/config/llm_config.json
+
+# Set the CMD to your handler function
+CMD [ "lambda_function.lambda_handler" ]

@@ -10,3 +10,17 @@ local_test/
 AWSCLIV2.pkg
 
 .env
+
+# Runtime artifacts
+ingest.log
+*.log
+
+# Local data (proprietary PDFs + processed chunks)
+data/raw/
+data/processed/
+
+# Claude Code local state
+.claude/
+
+# Architecture/business reports — kept local
+docs/

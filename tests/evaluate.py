@@ -4,9 +4,8 @@ import os
 from dotenv import load_dotenv
 from langsmith import Client
 from langsmith.evaluation import evaluate, LangChainStringEvaluator
-from llm import get_llm
-import rag_logic
-import rag_logic_v1
+from src.core.llm import get_llm
+from src.core import rag_logic
 
 load_dotenv()
 
@@ -50,21 +49,7 @@ coherence_evaluator = LangChainStringEvaluator(
 evaluators_list = [correctness_evaluator, coherence_evaluator]
 
 
-# --- EXPERIMENT A: Baseline LCEL RAG implementation ---
-def predict_v1_baseline(inputs: dict):
-    response = rag_logic_v1.query_rag(
-        user_query=inputs["question"],
-        vector_store=vector_store,
-        groq_api_key=LLM_API_KEY,
-        user_role="Public",
-        retrieval_k=3,
-        prompt_template=rag_logic_v1.SYSTEM_RAG_PROMPT,
-        model_name="llama-3.1-8b-instant"
-    )
-    return {"output": response}
-
-
-# --- EXPERIMENT B: Agentic LangGraph implementation ---
+# --- Agentic LangGraph implementation ---
 def predict_agentic_strict(inputs: dict):
     experimental_prompt = (
         "You are a strict, highly detailed document auditor. "
@@ -77,24 +62,16 @@ def predict_agentic_strict(inputs: dict):
         vector_store=vector_store,
         llm_api_key=LLM_API_KEY,
         user_role="Public",
-        retrieval_k=5,
+        final_k=5,
         prompt_template=experimental_prompt,
         model_name=rag_logic.ACTIVE_LLM_MODEL
     )
     return {"output": response}
 
 
-# Run evaluations in LangSmith
+# Run evaluation in LangSmith
 try:
-    print("\n[~] Running Experiment A (V1 Baseline) with automated judges...")
-    evaluate(
-        predict_v1_baseline,
-        data="rag-evaluation-suite",
-        evaluators=evaluators_list,
-        experiment_prefix="V1-Baseline-Standard",
-    )
-    
-    print("\n[~] Running Experiment B (Agentic Strict K5) with automated judges...")
+    print("\n[~] Running Agentic RAG evaluation with automated judges...")
     evaluate(
         predict_agentic_strict,
         data="rag-evaluation-suite",

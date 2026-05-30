@@ -5,7 +5,7 @@ import shutil
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import rag_logic
+from src.core import rag_logic
 
 app = FastAPI(title="RAG Backend API")
 
@@ -18,8 +18,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Read variables directly on the backend
-LLM_API_KEY = os.getenv("LLM_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("GROQ_API_KEY")
+# Read variables directly on the backend (LLM key is resolved per-provider inside get_llm)
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 AWS_REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
 S3_BUCKET = os.getenv("AWS_S3_BUCKET_NAME")
@@ -51,30 +50,43 @@ def get_status():
 
 @app.post("/upload")
 async def upload_file(
-    file: UploadFile = File(...), 
+    file: UploadFile = File(...),
     required_role: str = Form("Public")
 ):
-    """Upload PDF to S3 and process into Pinecone with role-based metadata."""
+    """Upload PDF → S3, run extraction pipeline, then ingest chunks into Pinecone."""
+    from src.utils.run_pipeline import run_full_pipeline
+
     temp_path = f"temp_{file.filename}"
     s3_key = f"documents/{file.filename}"
-    
+
     try:
         with open(temp_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-            
+
+        # 1. Archive raw PDF to S3
         uploaded = rag_logic.upload_to_s3(temp_path, S3_BUCKET, s3_key, s3_client)
         if not uploaded:
             raise HTTPException(status_code=500, detail="Failed to upload file to S3.")
-            
-        rag_logic.process_and_upload_pdf(
-            temp_path, 
-            embeddings, 
-            PINECONE_API_KEY, 
-            S3_BUCKET, 
-            s3_key, 
-            required_role
+
+        # 2. Run extraction pipeline → produces chunks_with_metadata.json
+        result = run_full_pipeline(pdf_path=temp_path, output_base_folder="data/processed")
+        if not result:
+            raise HTTPException(status_code=500, detail="Extraction pipeline failed.")
+
+        # 3. Ingest chunks into Pinecone with role-based metadata
+        vector_count = rag_logic.ingest_chunks_from_json(
+            chunks_json_path=result["output_json"],
+            embeddings=embeddings,
+            pinecone_api_key=PINECONE_API_KEY,
+            required_role=required_role,
+            replace_existing=True,
         )
-        return {"status": "success", "message": f"Processed and indexed {file.filename} with role: {required_role}"}
+        return {
+            "status": "success",
+            "message": f"Processed and indexed {file.filename} with role: {required_role}",
+            "chunks_indexed": vector_count,
+            "output_folder": result["folder"],
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
@@ -86,10 +98,9 @@ def query_endpoint(body: QueryRequest):
     """Query the RAG pipeline enforcing role-based filtering."""
     try:
         answer = rag_logic.query_rag(
-            body.query, 
-            vector_store, 
-            LLM_API_KEY, 
-            user_id=body.user_id, 
+            body.query,
+            vector_store,
+            user_id=body.user_id,
             session_id=body.session_id,
             user_role=body.user_role
         )

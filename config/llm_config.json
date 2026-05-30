@@ -1,0 +1,72 @@
+{
+  "default_provider": "groq",
+  "providers": {
+    "google": {
+      "default_model": "gemini-flash-latest",
+      "vision_model": "gemini-3.1-flash-lite",
+      "api_key_env": "GOOGLE_API_KEY",
+      "request_timeout": 120,
+      "temperature": 0
+    },
+    "groq": {
+      "default_model": "openai/gpt-oss-120b",
+      "vision_model": "meta-llama/llama-4-scout-17b-16e-instruct",
+      "api_key_env": "GROQ_API_KEY",
+      "request_timeout": 120,
+      "temperature": 0
+    }
+  },
+  "embeddings": {
+    "provider": "huggingface",
+    "model": "sentence-transformers/all-MiniLM-L6-v2"
+  },
+  "pinecone": {
+    "index_name": "free-pdf-index",
+    "dimension": 384,
+    "metric": "cosine",
+    "cloud": "aws",
+    "region": "us-east-1",
+    "upsert_batch_size": 100
+  },
+  "semantic_cache": {
+    "score_threshold": 0.05
+  },
+  "image_descriptions": {
+    "provider": "google",
+    "model": null,
+    "downscale": {
+      "enabled": true,
+      "max_dim": 768,
+      "format": "PNG"
+    },
+    "min_interval_sec": 5
+  },
+  "retrieval": {
+    "hybrid_search": {
+      "enabled": true,
+      "dense_weight": 0.65,
+      "bm25": {
+        "k1": 1.5,
+        "b": 0.75
+      }
+    },
+    "reranker": {
+      "enabled": true,
+      "model": "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    },
+    "candidate_k": 20,
+    "final_k": 7
+  },
+  "ingestion": {
+    "pdf_extraction": {
+      "skip_top_pct": 0.03,
+      "skip_bottom_pct": 0.95,
+      "content_markers": ["Reading Time:", "What I Learned", "Introduction", "Overview"],
+      "footer_markers": ["Share\n\nPrev", "Share", "Prev", "Next"],
+      "image_context_words": 30
+    },
+    "chunking": {
+      "max_words": 300
+    }
+  }
+}
