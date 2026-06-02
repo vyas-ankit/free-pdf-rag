@@ -3,36 +3,44 @@
 Input guardrails — run before any LLM/retrieval work.
 
 Public API:
-    run_input_guards(query, raw_user_log) -> GuardResult
-
-Two separate stores flow through here:
-  raw_user_log  — every user turn (clean + blocked). Only the moderation
-                  guard reads this; the LLM pipeline never sees it.
-  SESSION_MEMORY — clean turns + AI responses. Never passed here;
-                   stays in rag_logic.py for the graph to consume.
+    run_input_guards(query, raw_user_log, user_id, session_id) -> GuardResult
 """
 
 from typing import List
+
+from langsmith import traceable
 
 from src.core.guards._base import GuardResult
 from src.core.guards.length import length_guard
 from src.core.guards.moderation import moderation_guard
 
 
-def run_input_guards(query: str, raw_user_log: List[str] = None) -> GuardResult:
+@traceable(
+    name="input_guards",
+    run_type="chain",
+    metadata={"component": "guardrails"},
+)
+def run_input_guards(
+    query: str,
+    raw_user_log: List[str] = None,
+    user_id: str = "guest_user",
+    session_id: str = "default_session",
+) -> GuardResult:
     """Run every enabled input guard. Returns the first failure or a pass.
 
     Args:
         query:         The current raw user query.
-        raw_user_log:  All user turns so far (including current), clean + blocked.
-                       Used by the moderation guard for multi-turn context.
+        raw_user_log:  All user turns so far (clean + blocked) for multi-turn
+                       moderation context.
+        user_id:       Authenticated user — passed as trace metadata.
+        session_id:    Session identifier — passed as trace metadata.
     """
-    # Length guard — raw query only.
+    # Length guard — raw query only
     result = length_guard(query)
     if not result.passed:
         return result
 
-    # Moderation guard — full user history for multi-turn detection.
+    # Moderation guard — full user history
     result = moderation_guard(raw_user_log or [query])
     if not result.passed:
         return result

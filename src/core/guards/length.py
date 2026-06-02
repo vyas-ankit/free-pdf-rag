@@ -9,6 +9,7 @@ precisely.
 """
 
 import tiktoken
+from langsmith import traceable
 
 from src.core.config import get_guards_config
 from src.core.guards._base import GuardResult
@@ -24,6 +25,11 @@ def _get_encoder(encoder_name: str):
     return _ENCODERS[encoder_name]
 
 
+@traceable(
+    name="length_guard",
+    run_type="chain",
+    metadata={"component": "guardrails"},
+)
 def length_guard(query: str) -> GuardResult:
     cfg = get_guards_config().get("input", {}).get("length", {})
 

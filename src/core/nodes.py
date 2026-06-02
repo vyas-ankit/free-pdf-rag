@@ -1,159 +1,417 @@
 # src/core/nodes.py
 """
-LangGraph node functions + the AgentState schema + intent-routing edge fn.
+LangGraph node functions for the planning-agent architecture.
 
-Every node takes the AgentState dict and returns a partial state update.
-The graph itself is assembled in rag_logic.py.
+Flow:
+    planner → plan_validator → executor ⟲ step_result_accumulator → synthesizer
+
+Each node receives AgentState and returns a partial state update.
 """
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+import json
+import re
+from typing import Optional
+
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
+from langsmith import traceable, get_current_run_tree
 
 from src.core.agent_state import AgentState
 from src.core.llm import get_default_model, get_llm
-from src.core.prompts import (
-    ACTION_EXECUTOR_SYSTEM_PROMPT,
-    INTENT_CLASSIFIER_PROMPT,
-    QUERY_REWRITER_PROMPT,
-    SYSTEM_RAG_PROMPT,
-)
-from src.core.retrieval import (
-    candidate_k_default,
-    final_k_default,
-    format_docs,
-    retrieve_hybrid_and_rerank,
-)
-from src.core.tools import tools
+from src.core.prompts import PLANNER_PROMPT, SYNTHESIZER_PROMPT
 
 
 ACTIVE_LLM_MODEL = get_default_model()
 
-
-# --- Agent Nodes ---
-
-def query_rewriter_node(state: AgentState):
-    """Resolves pronouns and history into a standalone question."""
-    chat_history = state["messages"][:-1]  # Exclude the latest human message
-
-    if not chat_history:
-        return {"rewritten_query": state["user_query"]}
-
-    # Pinned to OpenAI for the rewriter only — its strict-output-format adherence
-    # is significantly better than Groq's Llama on this task. Other nodes
-    # continue to use the default provider from config.
-    llm = get_llm(provider="openai")
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", QUERY_REWRITER_PROMPT),
-        *chat_history,
-        ("human", "{user_query}"),
-    ])
-    chain = prompt | llm
-    response = chain.invoke({"user_query": state["user_query"]})
-    print(f"\n[Agentic RAG] Rewritten Query: '{response.content}'")
-    return {"rewritten_query": response.content}
+# Step types the plan_validator will allow
+_ALLOWED_STEP_TYPES = {"retrieve", "fetch_location", "book_desk_tool", "ask_user"}
+_MAX_STEPS = 8
 
 
-def intent_classifier_node(state: AgentState):
-    """Classifies the rewritten query as 'action' or 'knowledge'.
+# ────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ────────────────────────────────────────────────────────────────────────────
 
-    Uses plain text output and parses the response — the prompt instructs the
-    model to reply with a single word, which is incompatible with Groq's
-    tool-call-required behavior in with_structured_output().
+def _format_history(messages: list) -> str:
+    """Format message list into readable conversation history for prompts."""
+    lines = []
+    for m in messages:
+        if isinstance(m, HumanMessage):
+            lines.append(f"[user]: {m.content}")
+        elif isinstance(m, AIMessage):
+            lines.append(f"[assistant]: {m.content}")
+    return "\n".join(lines) if lines else "(no prior conversation)"
+
+
+def _resolve_arg(value: str, step_results: dict) -> str:
+    """Replace $step_N references in arg values with actual step results."""
+    if not isinstance(value, str):
+        return value
+    match = re.fullmatch(r"\$step_(\d+)", value.strip())
+    if match:
+        step_id = int(match.group(1))
+        return step_results.get(step_id, f"[result of step {step_id} not found]")
+    return value
+
+
+def _pending_steps_text(plan: Optional[dict], current_step_index: int) -> str:
+    """Summarise remaining steps for the planner when resuming a paused plan."""
+    if not plan or not plan.get("steps"):
+        return "(none)"
+    remaining = plan["steps"][current_step_index:]
+    if not remaining:
+        return "(none)"
+    return "\n".join(
+        f"  Step {s['id']}: {s['type']} — {s.get('description', '')}"
+        for s in remaining
+    )
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 1. Planner
+# ────────────────────────────────────────────────────────────────────────────
+
+@traceable(name="planner", run_type="chain", metadata={"component": "planning"})
+def planner_node(state: AgentState) -> dict:
+    """Produce a structured JSON plan for the current user query.
+
+    If a prior plan was paused waiting for user input, the user's reply is
+    incorporated and the plan resumes from where it left off — no re-planning
+    from scratch.
     """
-    llm = get_llm(
-        model_name=state.get("model_name", ACTIVE_LLM_MODEL),
-        llm_api_key=state.get("llm_api_key"),
-    )
+    llm = get_llm(model_name=state.get("model_name", ACTIVE_LLM_MODEL),
+                  llm_api_key=state.get("llm_api_key"))
 
-    history_text = ""
-    chat_history = state["messages"][:-1]
-    for msg in chat_history:
-        role = "user" if isinstance(msg, HumanMessage) else "assistant"
-        history_text += f"[{role}]: {msg.content}\n"
-    if not history_text:
-        history_text = "[No previous conversation history]"
+    # If we're resuming a paused plan, reuse it rather than re-plan
+    existing_plan = state.get("plan")
+    current_step_index = state.get("current_step_index", 0)
+    awaiting = state.get("awaiting_user_input")
 
-    formatted_human_input = (
-        f"<conversation_history>\n{history_text}</conversation_history>\n\n"
-        f"<current_query>\n{state['rewritten_query']}\n</current_query>"
-    )
+    if existing_plan and awaiting:
+        # User just answered the ask_user question — fill the answer into
+        # step_results and advance past the ask_user step.
+        user_reply = state["user_query"]
+        step_results = dict(state.get("step_results") or {})
+        ask_step_id = existing_plan["steps"][current_step_index]["id"]
+        step_results[ask_step_id] = user_reply
+        return {
+            "step_results": step_results,
+            "current_step_index": current_step_index + 1,
+            "awaiting_user_input": None,
+        }
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", INTENT_CLASSIFIER_PROMPT),
-        ("human", "{formatted_input}"),
-    ])
-
-    chain = prompt | llm | StrOutputParser()
-    raw_response = chain.invoke({"formatted_input": formatted_human_input})
-
-    # Robust parsing: scan response for keyword. Default to "knowledge" (safer).
-    text = (raw_response or "").lower()
-    if "action" in text and "knowledge" not in text:
-        intent = "action"
-    else:
-        intent = "knowledge"
-
-    print(f"[Agentic RAG] Classified Intent: '{intent.upper()}' (raw='{raw_response.strip()[:40]}')")
-    return {"query_intent": intent}
-
-
-def action_executor_node(state: AgentState):
-    """Agent node equipped with tools to handle desk-booking conversational loops."""
-    llm = get_llm(
-        model_name=state.get("model_name", ACTIVE_LLM_MODEL),
-        llm_api_key=state.get("llm_api_key"),
-    )
-    llm_with_tools = llm.bind_tools(tools)
-
+    # Fresh query or prior plan is complete — generate a new plan
+    all_messages = state.get("messages", [])
+    history_text = _format_history(all_messages[:-1])
+    pending_text = _pending_steps_text(existing_plan, current_step_index)
     user_id = state.get("user_id", "guest_user")
-    system_instruction = ACTION_EXECUTOR_SYSTEM_PROMPT.format(user_id=user_id)
-
-    messages = [SystemMessage(content=system_instruction)] + state["messages"]
-    response = llm_with_tools.invoke(messages)
-    return {"messages": [response]}
-
-
-def knowledge_executor_node(state: AgentState):
-    """Executes secure, role-based vector retrieval and RAG response generation."""
-    llm = get_llm(
-        model_name=state.get("model_name", ACTIVE_LLM_MODEL),
-        llm_api_key=state.get("llm_api_key"),
-    )
-    vector_store = state["vector_store"]
     user_role = state.get("user_role", "Public")
 
-    docs = retrieve_hybrid_and_rerank(
-        query=state["rewritten_query"],
-        vector_store=vector_store,
+    print(f"[planner] total messages in state: {len(all_messages)}")
+    print(f"[planner] history turns passed to prompt: {len(all_messages) - 1}")
+    if history_text != "(no prior conversation)":
+        print(f"[planner] history preview: {history_text[:200]}")
+
+    prompt_text = PLANNER_PROMPT.format(
+        user_id=user_id,
         user_role=user_role,
-        candidate_k=state.get("candidate_k") or candidate_k_default(),
-        final_k=state.get("final_k") or final_k_default(),
+        conversation_history=history_text,
+        user_query=state["user_query"],
+        pending_steps=pending_text,
     )
-    context = format_docs(docs)
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", state.get("prompt_template") or SYSTEM_RAG_PROMPT),
-        ("human", "{input}"),
-    ])
-
+    # Tag the full prompt as a child span so LangSmith shows it
     chain = (
-        {"context": lambda x: context, "input": RunnablePassthrough()}
-        | prompt
-        | llm
+        ChatPromptTemplate.from_messages([("human", "{prompt}")])
+        | llm.with_config({"run_name": "planner_llm"})
         | StrOutputParser()
     )
+    raw = chain.invoke({"prompt": prompt_text})
 
-    response = chain.invoke(state["rewritten_query"])
-    return {"messages": [AIMessage(content=response)]}
+    # Strip markdown fences if the model wrapped the JSON
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip())
+    try:
+        plan = json.loads(cleaned)
+    except json.JSONDecodeError:
+        # Fallback: treat the whole query as a single retrieve step
+        plan = {
+            "reasoning": "Could not parse plan — defaulting to document retrieval.",
+            "steps": [{"id": 1, "type": "retrieve", "description": "Search knowledge base",
+                        "args": {"query": state["user_query"]}}],
+        }
+
+    step_types = [s["type"] for s in plan.get("steps", [])]
+    print(f"[planner] reasoning: {plan.get('reasoning', '')}")
+    for s in plan.get("steps", []):
+        print(f"[planner]   step {s['id']}: {s['type']} — {s.get('description', '')}")
+
+    # Surface plan summary as langsmith metadata
+    rt = get_current_run_tree()
+    if rt:
+        rt.metadata.update({
+            "step_count": len(plan.get("steps", [])),
+            "step_types": step_types,
+            "reasoning": plan.get("reasoning", ""),
+        })
+
+    return {
+        "plan": plan,
+        "current_step_index": 0,
+        "step_results": {},
+        "plan_complete": False,
+        "awaiting_user_input": None,
+        "final_answer": None,
+    }
 
 
-# --- Conditional Routing Edge ---
+# ────────────────────────────────────────────────────────────────────────────
+# 2. Plan Validator
+# ────────────────────────────────────────────────────────────────────────────
 
-def route_by_intent(state: AgentState):
-    """Decides whether to route to the Action or Knowledge pipeline."""
-    intent = state["query_intent"].lower()
-    if "action" in intent:
-        return "action_executor"
-    return "knowledge_executor"
+@traceable(name="plan_validator", run_type="chain", metadata={"component": "planning"})
+def plan_validator_node(state: AgentState) -> dict:
+    """Validate the plan before any execution.
+
+    Checks:
+    - Step types are from the allowed list
+    - No more than _MAX_STEPS steps
+    - book_desk_tool always uses the authenticated user_id
+    - At least one step exists
+    """
+    plan = state.get("plan", {})
+    steps = plan.get("steps", [])
+    user_id = state.get("user_id", "guest_user")
+    errors = []
+
+    if not steps:
+        errors.append("Plan has no steps.")
+
+    if len(steps) > _MAX_STEPS:
+        errors.append(f"Plan has {len(steps)} steps — maximum allowed is {_MAX_STEPS}.")
+
+    for step in steps:
+        step_type = step.get("type")
+        if step_type not in _ALLOWED_STEP_TYPES:
+            errors.append(f"Step {step['id']}: unknown type '{step_type}'.")
+
+        # Enforce identity binding on booking tool
+        if step_type == "book_desk_tool":
+            args = step.get("args", {})
+            if args.get("user_id") not in (user_id, f"{{user_id}}", "{user_id}"):
+                errors.append(
+                    f"Step {step['id']}: book_desk_tool user_id "
+                    f"'{args.get('user_id')}' does not match session user '{user_id}'."
+                )
+                # Correct it rather than blocking — belt and suspenders
+                args["user_id"] = user_id
+
+    if errors:
+        error_text = " | ".join(errors)
+        print(f"[plan_validator] Validation errors: {error_text}")
+        # Return a single-step fallback plan that explains the issue
+        return {
+            "plan": {
+                "reasoning": f"Plan validation failed: {error_text}",
+                "steps": [{"id": 1, "type": "ask_user",
+                            "description": "Clarify request",
+                            "args": {"question": "I couldn't understand that request. Could you rephrase?"}}],
+            },
+            "current_step_index": 0,
+            "step_results": {},
+        }
+
+    print(f"[plan_validator] Plan valid — {len(steps)} step(s)")
+    return {}
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 3. Executor
+# ────────────────────────────────────────────────────────────────────────────
+
+@traceable(name="executor_step", run_type="tool", metadata={"component": "execution"})
+def executor_node(state: AgentState) -> dict:
+    """Execute the current step in the plan.
+
+    Returns partial state update. The graph loops back here via
+    step_result_accumulator until plan_complete is True or an ask_user
+    step pauses execution.
+    """
+    plan = state["plan"]
+    steps = plan["steps"]
+    idx = state.get("current_step_index", 0)
+    step_results = dict(state.get("step_results") or {})
+    user_id = state.get("user_id", "guest_user")
+
+    if idx >= len(steps):
+        return {"plan_complete": True}
+
+    step = steps[idx]
+    step_type = step["type"]
+    args = {k: _resolve_arg(v, step_results) for k, v in step.get("args", {}).items()}
+
+    print(f"[executor] Running step {step['id']}: {step_type} args={args}")
+
+    # ── retrieve ──────────────────────────────────────────────────────────
+    if step_type == "retrieve":
+        from src.core.retrieval import retrieve_hybrid_and_rerank, format_docs
+        vector_store = state["vector_store"]
+        user_role = state.get("user_role", "Public")
+        candidate_k = state.get("candidate_k", 20)
+        final_k = state.get("final_k", 7)
+        try:
+            docs = retrieve_hybrid_and_rerank(
+                query=args.get("query", state["user_query"]),
+                vector_store=vector_store,
+                user_role=user_role,
+                candidate_k=candidate_k,
+                final_k=final_k,
+            )
+            result = format_docs(docs)
+        except Exception as exc:
+            result = f"[retrieve error: {exc}]"
+
+    # ── fetch_location ────────────────────────────────────────────────────
+    elif step_type == "fetch_location":
+        from src.core.tools import fetch_location
+        try:
+            result = fetch_location.invoke({"user_id": args.get("user_id", user_id)})
+        except Exception as exc:
+            result = f"[fetch_location error: {exc}]"
+
+    # ── book_desk_tool ────────────────────────────────────────────────────
+    elif step_type == "book_desk_tool":
+        from src.core.tools import book_desk_tool
+        try:
+            result = book_desk_tool.invoke({
+                "user_id": user_id,  # always use authenticated user_id
+                "date": args.get("date", ""),
+                "floor": int(args.get("floor", 1)),
+            })
+        except Exception as exc:
+            result = f"[book_desk_tool error: {exc}]"
+
+    # ── ask_user ──────────────────────────────────────────────────────────
+    elif step_type == "ask_user":
+        question = args.get("question", "Could you provide more information?")
+        print(f"[executor] Pausing for user input: {question}")
+        return {
+            "awaiting_user_input": question,
+            "step_results": step_results,
+            "messages": [AIMessage(content=question)],
+            "plan_complete": False,
+        }
+
+    else:
+        result = f"[unknown step type: {step_type}]"
+
+    step_results[step["id"]] = result
+    print(f"[executor] Step {step['id']} result: {str(result)[:120]}")
+
+    rt = get_current_run_tree()
+    if rt:
+        rt.metadata.update({
+            "step_id": step["id"],
+            "step_type": step_type,
+            "step_description": step.get("description", ""),
+            "result_preview": str(result)[:200],
+        })
+
+    return {
+        "step_results": step_results,
+        "current_step_index": idx + 1,
+        "plan_complete": idx + 1 >= len(steps),
+    }
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 4. Step Result Accumulator
+# ────────────────────────────────────────────────────────────────────────────
+
+@traceable(name="step_accumulator", run_type="chain", metadata={"component": "execution"})
+def step_result_accumulator_node(state: AgentState) -> dict:
+    """Lightweight pass-through that logs step progress.
+
+    Real accumulation happens inside executor_node — this node exists as a
+    clean separation point for the graph's conditional edge logic.
+    """
+    completed = state.get("current_step_index", 0)
+    total = len((state.get("plan") or {}).get("steps", []))
+    print(f"[accumulator] {completed}/{total} steps complete, plan_complete={state.get('plan_complete')}")
+    return {}
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 5. Synthesizer
+# ────────────────────────────────────────────────────────────────────────────
+
+@traceable(name="synthesizer", run_type="chain", metadata={"component": "synthesis"})
+def synthesizer_node(state: AgentState) -> dict:
+    """Produce the final user-facing answer from all step results."""
+    llm = get_llm(model_name=state.get("model_name", ACTIVE_LLM_MODEL),
+                  llm_api_key=state.get("llm_api_key"))
+
+    step_results = state.get("step_results") or {}
+    plan = state.get("plan") or {}
+
+    # Build a readable summary of step results
+    lines = []
+    for step in plan.get("steps", []):
+        sid = step["id"]
+        result = step_results.get(sid, "(no result)")
+        lines.append(f"Step {sid} [{step['type']}]: {result}")
+    step_results_text = "\n\n".join(lines) if lines else "(no steps were executed)"
+
+    history_text = _format_history(state.get("messages", [])[:-1])
+
+    prompt_text = SYNTHESIZER_PROMPT.format(
+        user_query=state["user_query"],
+        conversation_history=history_text,
+        step_results_text=step_results_text,
+    )
+
+    chain = (
+        ChatPromptTemplate.from_messages([("human", "{prompt}")])
+        | llm.with_config({"run_name": "synthesizer_llm"})
+        | StrOutputParser()
+    )
+    answer = chain.invoke({"prompt": prompt_text})
+
+    print(f"[synthesizer] Answer: {answer[:120]}")
+
+    rt = get_current_run_tree()
+    if rt:
+        rt.metadata.update({
+            "steps_used": len(plan.get("steps", [])),
+            "answer_preview": answer[:200],
+        })
+
+    return {
+        "final_answer": answer,
+        "messages": [AIMessage(content=answer)],
+    }
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Routing functions (used as conditional edges in graph.py)
+# ────────────────────────────────────────────────────────────────────────────
+
+def route_after_planner(state: AgentState) -> str:
+    """If resuming an ask_user step, skip replanning and go straight to executor."""
+    if state.get("awaiting_user_input") is None and state.get("plan"):
+        # planner_node already advanced the step index for us (ask_user resume)
+        # Check if there are more steps to run
+        plan = state.get("plan", {})
+        idx = state.get("current_step_index", 0)
+        if idx < len(plan.get("steps", [])):
+            return "executor"
+    return "plan_validator"
+
+
+def route_after_accumulator(state: AgentState) -> str:
+    """Loop executor until plan is complete or user input is needed."""
+    if state.get("awaiting_user_input"):
+        return "end"
+    if state.get("plan_complete"):
+        return "synthesizer"
+    return "executor"

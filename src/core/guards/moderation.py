@@ -21,6 +21,8 @@ category can have an appropriate response policy (block vs. soft-warn).
 import os
 from typing import List
 
+from langsmith import traceable
+
 from src.core.config import get_guards_config
 from src.core.guards._base import GuardResult
 
@@ -80,6 +82,11 @@ def _build_combined_string(raw_user_log: List[str], max_tokens: int = 400) -> st
     return "\n".join(reversed(lines))
 
 
+@traceable(
+    name="moderation_guard",
+    run_type="chain",
+    metadata={"component": "guardrails"},
+)
 def moderation_guard(raw_user_log: List[str]) -> GuardResult:
     """Run OpenAI Moderation on the combined recent user turns."""
     cfg = get_guards_config().get("input", {}).get("moderation", {})

@@ -1,61 +1,76 @@
 # src/core/graph.py
 """
-Assembles the LangGraph StateGraph from node functions, tools, and the routing
-edge — and compiles it into the executable graph that `query_rag` invokes.
+Assembles the planning-agent LangGraph workflow and compiles it.
 
-This module owns the *shape* of the workflow:
-    START → query_rewriter → intent_classifier ─┬→ knowledge_executor → END
-                                                │
-                                                └→ action_executor ⇄ tools → END
+Flow:
+    START → planner ─┬→ plan_validator → executor ⟲ accumulator ─┬→ synthesizer → END
+                     │                                             └→ END (ask_user pause)
+                     └→ executor (when resuming a paused ask_user step)
+
+The executor ↔ accumulator loop runs once per plan step until all steps
+complete or an ask_user step pauses execution for user input.
 """
 
 from langgraph.graph import END, START, StateGraph
-from langgraph.prebuilt import tools_condition
 
 from src.core.agent_state import AgentState
 from src.core.nodes import (
-    action_executor_node,
-    intent_classifier_node,
-    knowledge_executor_node,
-    query_rewriter_node,
-    route_by_intent,
+    executor_node,
+    plan_validator_node,
+    planner_node,
+    route_after_accumulator,
+    route_after_planner,
+    step_result_accumulator_node,
+    synthesizer_node,
 )
-from src.core.tools import tool_node
 
 
 def build_graph():
-    """Construct and compile the agent workflow. Called once at import time."""
+    """Construct and compile the planning-agent workflow."""
     workflow = StateGraph(AgentState)
 
-    workflow.add_node("query_rewriter", query_rewriter_node)
-    workflow.add_node("intent_classifier", intent_classifier_node)
-    workflow.add_node("action_executor", action_executor_node)
-    workflow.add_node("knowledge_executor", knowledge_executor_node)
-    workflow.add_node("tools", tool_node)
+    # ── Register nodes ────────────────────────────────────────────────────
+    workflow.add_node("planner",       planner_node)
+    workflow.add_node("plan_validator", plan_validator_node)
+    workflow.add_node("executor",      executor_node)
+    workflow.add_node("accumulator",   step_result_accumulator_node)
+    workflow.add_node("synthesizer",   synthesizer_node)
 
-    workflow.add_edge(START, "query_rewriter")
-    workflow.add_edge("query_rewriter", "intent_classifier")
+    # ── Edges ─────────────────────────────────────────────────────────────
 
+    # Entry point
+    workflow.add_edge(START, "planner")
+
+    # After planner: either validate a new plan or jump straight to executor
+    # if we're resuming an ask_user pause (planner already advanced the index)
     workflow.add_conditional_edges(
-        "intent_classifier",
-        route_by_intent,
+        "planner",
+        route_after_planner,
         {
-            "action_executor": "action_executor",
-            "knowledge_executor": "knowledge_executor",
+            "plan_validator": "plan_validator",
+            "executor": "executor",
         },
     )
 
-    # Re-act loop for action_executor
+    # Validator always leads to executor
+    workflow.add_edge("plan_validator", "executor")
+
+    # After each step execution, pass through accumulator
+    workflow.add_edge("executor", "accumulator")
+
+    # Accumulator decides: loop, pause for user, or synthesize
     workflow.add_conditional_edges(
-        "action_executor",
-        tools_condition,
+        "accumulator",
+        route_after_accumulator,
         {
-            "tools": "tools",
-            END: END,
+            "executor":    "executor",
+            "synthesizer": "synthesizer",
+            "end":         END,          # ask_user pause — answer already in messages
         },
     )
-    workflow.add_edge("tools", "action_executor")
-    workflow.add_edge("knowledge_executor", END)
+
+    # Synthesizer always ends
+    workflow.add_edge("synthesizer", END)
 
     return workflow.compile()
 

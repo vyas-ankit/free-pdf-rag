@@ -1,7 +1,9 @@
 # src/core/rag_logic.py
 """
-The agent's public surface: `query_rag` invokes the compiled LangGraph and
-manages in-memory session memory across turns.
+Public entry point for the planning agent.
+
+`query_rag` invokes the compiled LangGraph with a per-session thread_id so
+each user has isolated, persistent conversation state via MemorySaver.
 
 Where the pieces live:
   - AgentState schema                      → src/core/agent_state.py
@@ -15,27 +17,31 @@ Where the pieces live:
 
 from typing import List
 
-from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.messages import HumanMessage
 from langchain_pinecone import PineconeVectorStore
+from langgraph.checkpoint.memory import MemorySaver
+from langsmith import traceable
 
-from src.core.graph import compiled_graph
+from src.core.graph import build_graph
 from src.core.guards import run_input_guards
-from src.core.nodes import ACTIVE_LLM_MODEL  # re-exposed for callers (tests/evaluate.py)
+from src.core.nodes import ACTIVE_LLM_MODEL
 from src.core.prompts import SYSTEM_RAG_PROMPT
 from src.core.retrieval import candidate_k_default, final_k_default
 
 
-# SESSION_MEMORY: clean turns only (passed guard + AI responses).
-# Fed to the rewriter, intent classifier, and executors.
-SESSION_MEMORY: List[BaseMessage] = []
+# ── Checkpointer ──────────────────────────────────────────────────────────
+_checkpointer = MemorySaver()
+_compiled_graph = build_graph()
 
-# RAW_USER_LOG: every user turn regardless of whether it passed or was blocked.
-# Fed to the moderation guard only — the LLM pipeline never sees this.
-# This is what enables multi-turn harmful-content detection: even blocked
-# turns are visible to the next call's guard.
-RAW_USER_LOG: List[str] = []
+# ── RAW_USER_LOG ──────────────────────────────────────────────────────────
+_raw_user_logs: dict[str, List[str]] = {}
 
 
+@traceable(
+    name="query_rag",
+    run_type="chain",
+    metadata={"component": "entry_point"},
+)
 def query_rag(
     user_query: str,
     vector_store: PineconeVectorStore,
@@ -48,34 +54,29 @@ def query_rag(
     prompt_template: str = None,
     model_name: str = ACTIVE_LLM_MODEL,
 ) -> str:
-    global SESSION_MEMORY, RAW_USER_LOG
+    # ── 1. Append to per-session raw log (before guard) ───────────────────
+    if session_id not in _raw_user_logs:
+        _raw_user_logs[session_id] = []
+    _raw_user_logs[session_id].append(user_query)
 
-    # Every user turn goes into RAW_USER_LOG immediately — before any guard.
-    # The moderation guard reads this log to see the full history including
-    # prior blocked turns (which never enter SESSION_MEMORY).
-    RAW_USER_LOG.append(user_query)
-
-    # --- Input guardrails ---
-    # Length guard: raw query only (we're capping what the user typed).
-    # Moderation guard: full RAW_USER_LOG (sees blocked turns too).
-    guard_result = run_input_guards(user_query, raw_user_log=RAW_USER_LOG)
+    # ── 2. Input guardrails ───────────────────────────────────────────────
+    guard_result = run_input_guards(
+        user_query,
+        raw_user_log=_raw_user_logs[session_id],
+        user_id=user_id,
+        session_id=session_id,
+    )
     if not guard_result.passed:
         print(f"[guards] Blocked: reason={guard_result.reason} details={guard_result.details}")
-        # Blocked query and the rejection message are NOT added to SESSION_MEMORY.
-        # The LLM pipeline never sees this turn happened.
         return guard_result.message or "I can't process that request."
 
-    # Guard passed — add to SESSION_MEMORY so rewriter/executors have context.
-    messages = list(SESSION_MEMORY)
-    messages.append(HumanMessage(content=user_query))
-
-    # Resolve k values from config — explicit args still win if passed.
+    # ── 3. Build initial state ────────────────────────────────────────────
     resolved_candidate_k = candidate_k or candidate_k_default()
     resolved_final_k = final_k or final_k_default()
 
     initial_state = {
         "user_query": user_query,
-        "messages": messages,
+        "messages": [HumanMessage(content=user_query)],
         "user_id": user_id,
         "user_role": user_role,
         "llm_api_key": llm_api_key,
@@ -84,12 +85,16 @@ def query_rag(
         "final_k": resolved_final_k,
         "prompt_template": prompt_template or SYSTEM_RAG_PROMPT,
         "model_name": model_name,
-        "final_report": "",
     }
 
-    final_state = compiled_graph.invoke(initial_state)
+    # ── 4. Invoke graph ───────────────────────────────────────────────────
+    config = {"configurable": {"thread_id": session_id}}
+    final_state = _compiled_graph.invoke(initial_state, config=config)
 
-    # Only clean turns + AI responses enter SESSION_MEMORY.
-    SESSION_MEMORY = final_state["messages"]
+    # ── 5. Return last AI message ─────────────────────────────────────────
+    messages = final_state.get("messages", [])
+    for msg in reversed(messages):
+        if hasattr(msg, "content") and not isinstance(msg, HumanMessage):
+            return msg.content
 
-    return final_state["messages"][-1].content
+    return "I couldn't generate a response. Please try again."
