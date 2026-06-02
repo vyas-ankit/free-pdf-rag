@@ -18,7 +18,6 @@ Where the pieces live:
 from typing import List
 
 from langchain_core.messages import HumanMessage
-from langchain_pinecone import PineconeVectorStore
 from langgraph.checkpoint.memory import MemorySaver
 from langsmith import traceable
 
@@ -29,9 +28,20 @@ from src.core.prompts import SYSTEM_RAG_PROMPT
 from src.core.retrieval import candidate_k_default, final_k_default
 
 
-# ── Checkpointer ──────────────────────────────────────────────────────────
+# ── Checkpointer + compiled graph ────────────────────────────────────────
 _checkpointer = MemorySaver()
-_compiled_graph = build_graph()
+_compiled_graph = build_graph(checkpointer=_checkpointer)
+
+# ── Vector store registry ─────────────────────────────────────────────────
+# PineconeVectorStore is not msgpack-serializable so it cannot live in
+# AgentState (the checkpointer would fail to snapshot it). Instead, nodes
+# that need it import this module and read _vector_store directly.
+_vector_store = None
+
+def set_vector_store(vs) -> None:
+    """Called once at startup by the backend/CLI before any query."""
+    global _vector_store
+    _vector_store = vs
 
 # ── RAW_USER_LOG ──────────────────────────────────────────────────────────
 _raw_user_logs: dict[str, List[str]] = {}
@@ -44,7 +54,7 @@ _raw_user_logs: dict[str, List[str]] = {}
 )
 def query_rag(
     user_query: str,
-    vector_store: PineconeVectorStore,
+    vector_store=None,
     llm_api_key: str = None,
     user_id: str = "guest_user",
     session_id: str = "default_session",
@@ -54,6 +64,10 @@ def query_rag(
     prompt_template: str = None,
     model_name: str = ACTIVE_LLM_MODEL,
 ) -> str:
+    # Register vector store for this call (nodes read from _vector_store)
+    if vector_store is not None:
+        set_vector_store(vector_store)
+
     # ── 1. Append to per-session raw log (before guard) ───────────────────
     if session_id not in _raw_user_logs:
         _raw_user_logs[session_id] = []
@@ -80,7 +94,6 @@ def query_rag(
         "user_id": user_id,
         "user_role": user_role,
         "llm_api_key": llm_api_key,
-        "vector_store": vector_store,
         "candidate_k": resolved_candidate_k,
         "final_k": resolved_final_k,
         "prompt_template": prompt_template or SYSTEM_RAG_PROMPT,

@@ -44,6 +44,23 @@ def _format_history(messages: list) -> str:
     return "\n".join(lines) if lines else "(no prior conversation)"
 
 
+_ORDINALS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
+}
+
+def _parse_floor(value) -> int:
+    """Extract a floor integer from natural language: '3rd floor', 'floor 5', 'third', '3'."""
+    v = str(value).lower().strip()
+    for word, num in _ORDINALS.items():
+        if word in v:
+            return num
+    match = re.search(r"\d+", v)
+    if match:
+        return int(match.group())
+    raise ValueError(f"Cannot parse floor number from: {value!r}")
+
+
 def _resolve_arg(value: str, step_results: dict) -> str:
     """Replace $step_N references in arg values with actual step results."""
     if not isinstance(value, str):
@@ -89,17 +106,13 @@ def planner_node(state: AgentState) -> dict:
     awaiting = state.get("awaiting_user_input")
 
     if existing_plan and awaiting:
-        # User just answered the ask_user question — fill the answer into
-        # step_results and advance past the ask_user step.
-        user_reply = state["user_query"]
-        step_results = dict(state.get("step_results") or {})
-        ask_step_id = existing_plan["steps"][current_step_index]["id"]
-        step_results[ask_step_id] = user_reply
-        return {
-            "step_results": step_results,
-            "current_step_index": current_step_index + 1,
-            "awaiting_user_input": None,
-        }
+        # User just answered the ask_user question. Re-plan from scratch
+        # with the user's answer in context — this lets the planner add
+        # steps that depend on what the user said (e.g. book_desk_tool with
+        # the now-known date and floor). Pure "advance index" without
+        # re-planning meant those dependent steps were never executed.
+        # Fall through to the fresh-plan path below (awaiting is now cleared).
+        pass
 
     # Fresh query or prior plan is complete — generate a new plan
     all_messages = state.get("messages", [])
@@ -233,14 +246,27 @@ def plan_validator_node(state: AgentState) -> dict:
 def executor_node(state: AgentState) -> dict:
     """Execute the current step in the plan.
 
-    Returns partial state update. The graph loops back here via
-    step_result_accumulator until plan_complete is True or an ask_user
-    step pauses execution.
+    If we were awaiting user input, the user's reply is in user_query.
+    Consume it as the answer to the pending ask_user step, then advance.
     """
     plan = state["plan"]
     steps = plan["steps"]
     idx = state.get("current_step_index", 0)
     step_results = dict(state.get("step_results") or {})
+
+    # If the prior step was an ask_user and we paused for input,
+    # the user's new message is the answer — record it and advance.
+    if state.get("awaiting_user_input"):
+        user_reply = state["user_query"]
+        ask_step = steps[idx]
+        step_results[ask_step["id"]] = user_reply
+        print(f"[executor] Consumed user reply for step {ask_step['id']} (ask_user): {user_reply!r}")
+        return {
+            "step_results": step_results,
+            "current_step_index": idx + 1,
+            "awaiting_user_input": None,
+            "plan_complete": idx + 1 >= len(steps),
+        }
     user_id = state.get("user_id", "guest_user")
 
     if idx >= len(steps):
@@ -255,7 +281,8 @@ def executor_node(state: AgentState) -> dict:
     # ── retrieve ──────────────────────────────────────────────────────────
     if step_type == "retrieve":
         from src.core.retrieval import retrieve_hybrid_and_rerank, format_docs
-        vector_store = state["vector_store"]
+        import src.core.rag_logic as _rl
+        vector_store = _rl._vector_store
         user_role = state.get("user_role", "Public")
         candidate_k = state.get("candidate_k", 20)
         final_k = state.get("final_k", 7)
@@ -283,13 +310,27 @@ def executor_node(state: AgentState) -> dict:
     elif step_type == "book_desk_tool":
         from src.core.tools import book_desk_tool
         try:
+            floor_val = _parse_floor(args.get("floor", 1))
             result = book_desk_tool.invoke({
-                "user_id": user_id,  # always use authenticated user_id
+                "user_id": user_id,
                 "date": args.get("date", ""),
-                "floor": int(args.get("floor", 1)),
+                "floor": floor_val,
             })
         except Exception as exc:
-            result = f"[book_desk_tool error: {exc}]"
+            # Tool failed — pause and ask the user to correct the input
+            # rather than silently marking the step complete.
+            error_question = (
+                f"I couldn't complete the booking: {exc}. "
+                f"Could you please clarify the date and floor? "
+                f"(e.g. 'June 17, floor 3')"
+            )
+            print(f"[executor] book_desk_tool failed: {exc} — asking user to retry")
+            return {
+                "step_results": step_results,
+                "awaiting_user_input": error_question,
+                "messages": [AIMessage(content=error_question)],
+                "plan_complete": False,
+            }
 
     # ── ask_user ──────────────────────────────────────────────────────────
     elif step_type == "ask_user":
@@ -396,15 +437,38 @@ def synthesizer_node(state: AgentState) -> dict:
 # Routing functions (used as conditional edges in graph.py)
 # ────────────────────────────────────────────────────────────────────────────
 
+def route_from_start(state: AgentState) -> str:
+    """Decide whether to re-plan or resume an existing in-progress plan.
+
+    Resume if ALL of:
+      - A plan already exists in state (carried by the checkpointer)
+      - The plan is not complete
+      - There are still unfinished steps
+
+    This includes the case where we were awaiting user input — the user's
+    new message IS the answer, so we resume and let the executor consume it.
+
+    Only re-plan if there is no plan yet, or the plan is fully complete
+    (meaning this is a genuinely new request).
+    """
+    plan = state.get("plan")
+    plan_complete = state.get("plan_complete", False)
+    current_idx = state.get("current_step_index", 0)
+    steps = (plan or {}).get("steps", [])
+
+    has_unfinished = bool(plan) and not plan_complete and current_idx < len(steps)
+
+    if has_unfinished:
+        awaiting = state.get("awaiting_user_input")
+        print(f"[router] Resuming existing plan — step {current_idx + 1}/{len(steps)}, awaiting={awaiting}")
+        return "executor"
+
+    print(f"[router] Re-planning — no active plan or plan complete")
+    return "planner"
+
+
 def route_after_planner(state: AgentState) -> str:
-    """If resuming an ask_user step, skip replanning and go straight to executor."""
-    if state.get("awaiting_user_input") is None and state.get("plan"):
-        # planner_node already advanced the step index for us (ask_user resume)
-        # Check if there are more steps to run
-        plan = state.get("plan", {})
-        idx = state.get("current_step_index", 0)
-        if idx < len(plan.get("steps", [])):
-            return "executor"
+    """Always validate then execute — planner always produces a fresh plan."""
     return "plan_validator"
 
 

@@ -3,12 +3,12 @@
 Assembles the planning-agent LangGraph workflow and compiles it.
 
 Flow:
-    START → planner ─┬→ plan_validator → executor ⟲ accumulator ─┬→ synthesizer → END
-                     │                                             └→ END (ask_user pause)
-                     └→ executor (when resuming a paused ask_user step)
+    START → router ─┬→ planner → plan_validator → executor ⟲ accumulator ─┬→ synthesizer → END
+                    │                                                        └→ END (ask_user pause)
+                    └→ executor  (resume existing in-progress plan)
 
-The executor ↔ accumulator loop runs once per plan step until all steps
-complete or an ask_user step pauses execution for user input.
+The router skips replanning when the checkpointer has an existing unfinished
+plan and no user input is pending.
 """
 
 from langgraph.graph import END, START, StateGraph
@@ -20,59 +20,57 @@ from src.core.nodes import (
     planner_node,
     route_after_accumulator,
     route_after_planner,
+    route_from_start,
     step_result_accumulator_node,
     synthesizer_node,
 )
 
 
-def build_graph():
+def build_graph(checkpointer=None):
     """Construct and compile the planning-agent workflow."""
     workflow = StateGraph(AgentState)
 
     # ── Register nodes ────────────────────────────────────────────────────
-    workflow.add_node("planner",       planner_node)
+    workflow.add_node("planner",        planner_node)
     workflow.add_node("plan_validator", plan_validator_node)
-    workflow.add_node("executor",      executor_node)
-    workflow.add_node("accumulator",   step_result_accumulator_node)
-    workflow.add_node("synthesizer",   synthesizer_node)
+    workflow.add_node("executor",       executor_node)
+    workflow.add_node("accumulator",    step_result_accumulator_node)
+    workflow.add_node("synthesizer",    synthesizer_node)
 
     # ── Edges ─────────────────────────────────────────────────────────────
 
-    # Entry point
-    workflow.add_edge(START, "planner")
+    # Router decides: resume existing plan or re-plan from scratch
+    workflow.add_conditional_edges(
+        START,
+        route_from_start,
+        {
+            "planner":  "planner",
+            "executor": "executor",
+        },
+    )
 
-    # After planner: either validate a new plan or jump straight to executor
-    # if we're resuming an ask_user pause (planner already advanced the index)
     workflow.add_conditional_edges(
         "planner",
         route_after_planner,
         {
             "plan_validator": "plan_validator",
-            "executor": "executor",
+            "executor":       "executor",
         },
     )
 
-    # Validator always leads to executor
     workflow.add_edge("plan_validator", "executor")
+    workflow.add_edge("executor",       "accumulator")
 
-    # After each step execution, pass through accumulator
-    workflow.add_edge("executor", "accumulator")
-
-    # Accumulator decides: loop, pause for user, or synthesize
     workflow.add_conditional_edges(
         "accumulator",
         route_after_accumulator,
         {
             "executor":    "executor",
             "synthesizer": "synthesizer",
-            "end":         END,          # ask_user pause — answer already in messages
+            "end":         END,
         },
     )
 
-    # Synthesizer always ends
     workflow.add_edge("synthesizer", END)
 
-    return workflow.compile()
-
-
-compiled_graph = build_graph()
+    return workflow.compile(checkpointer=checkpointer)

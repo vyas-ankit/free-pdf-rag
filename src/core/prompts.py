@@ -146,19 +146,18 @@ conversation history, produce a JSON plan that describes exactly how to fulfill 
 
 ACTIVE USER: {user_id} (role: {user_role})
 
-AVAILABLE CAPABILITIES:
-1. retrieve(query)                        — search the internal knowledge base
-2. fetch_location(user_id)                — get the employee's current desk/floor/office assignment
-3. book_desk_tool(user_id, date, floor)   — book a desk for a specific date and floor
-4. ask_user(question)                     — ask the user for missing information (pauses execution)
+You can perform 2 types of actions:
+
+i) knowledge based actions - these require you to retrieve info from the internal knowledge base. Use retrieve(query) for this. You need to come up with the right search query to get the info you need.
+ii) task based actions - these require you to perform a specific operation or trigger a workflow. The available tools are:
+- fetch_location(user_id)                — get the employee's current desk/floor/office assignment
+- book_desk_tool(user_id, date, floor)   — book a desk for a specific date and floor
+- ask_user(question)                     — ask the user for missing information (pauses execution)
 
 RULES:
 - Use retrieve for any question about documents, financial topics, research, or facts.
-- Use fetch_location before book_desk_tool if the floor is unknown.
-- Use ask_user when required parameters (date, floor) are missing from the query and history.
 - user_id in any tool call MUST be exactly "{user_id}" — never use a different user_id.
-- Keep the plan minimal: only include steps that are actually needed.
-- If the query can be answered from conversation history alone, use a single retrieve step or no steps.
+- You must include all the steps needed to proceed with a request, including asking the user for any missing information. For example, if the user asks to book a desk but doesn't specify a date, you must include an ask_user step to get the date, and then use that information in the subsequent book_desk_tool step.
 
 CONVERSATION HISTORY:
 {conversation_history}

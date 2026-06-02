@@ -9,7 +9,6 @@ it accumulates across turns.
 
 from typing import Annotated, Dict, List, Optional, TypedDict
 
-from langchain_pinecone import PineconeVectorStore
 from langgraph.graph.message import add_messages
 
 
@@ -20,7 +19,8 @@ class AgentState(TypedDict):
     user_id: str
     user_role: str
     llm_api_key: str
-    vector_store: PineconeVectorStore
+    # vector_store is intentionally excluded — PineconeVectorStore is not
+    # serializable by MemorySaver. It is accessed via rag_logic._vector_store.
     candidate_k: int
     final_k: int
     prompt_template: str
