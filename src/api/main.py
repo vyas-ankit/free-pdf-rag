@@ -4,7 +4,7 @@ import os
 import sys
 from dotenv import load_dotenv
 load_dotenv()
-from src.core import rag_logic
+from src.core import rag_logic, vector_store, aws
 
 
 def main():
@@ -41,12 +41,12 @@ def main():
         sys.exit(1)
 
     print("\n[+] Initializing S3 & Pinecone RAG System...")
-    embeddings = rag_logic.get_embeddings()
-    pc = rag_logic.init_pinecone(pinecone_api_key)
-    
-    # Initialize S3 client (Supports explicit keys on your local machine)
-    s3_client = rag_logic.get_s3_client(aws_access_key, aws_secret_key, aws_region)
-    vector_store = rag_logic.get_vector_store(embeddings, pinecone_api_key)
+    embeddings = vector_store.get_embeddings()
+    pc = vector_store.init_pinecone(pinecone_api_key)
+
+    # Initialize S3 client (supports explicit keys on your local machine)
+    s3_client = aws.get_s3_client(aws_access_key, aws_secret_key, aws_region)
+    vs = vector_store.get_vector_store(embeddings, pinecone_api_key)
     print("[+] System Ready.")
 
     while True:
@@ -76,7 +76,7 @@ def main():
             print(f"[~] 1. Uploading {file_name} to AWS S3 bucket '{s3_bucket}'...")
             try:
                 # Upload the PDF to S3
-                uploaded = rag_logic.upload_to_s3(pdf_path, s3_bucket, s3_key, s3_client)
+                uploaded = aws.upload_to_s3(pdf_path, s3_bucket, s3_key, s3_client)
 
                 if not uploaded:
                     print("[-] Ingestion failed during S3 upload step.")
@@ -92,7 +92,7 @@ def main():
 
                 # Ingest chunks into Pinecone
                 print("[~] 3. Ingesting chunks into Pinecone...")
-                count = rag_logic.ingest_chunks_from_json(
+                count = vector_store.ingest_chunks_from_json(
                     chunks_json_path=result["output_json"],
                     embeddings=embeddings,
                     pinecone_api_key=pinecone_api_key,
@@ -104,7 +104,7 @@ def main():
                 print(f"[-] Processing failed: {e}")
                 
         elif choice == "2":
-            if not rag_logic.check_index_has_vectors(pc):
+            if not vector_store.check_index_has_vectors(pc):
                 print("[-] Error: Your database is empty. Please index a PDF first.")
                 continue
             
@@ -122,8 +122,8 @@ def main():
                 try:
                     answer = rag_logic.query_rag(
                         user_query,
-                        vector_store,
-                        user_role=user_role
+                        vs,
+                        user_role=user_role,
                     )
                     print(f"\nAssistant: {answer}")
                 except Exception as e:
@@ -133,10 +133,10 @@ def main():
             confirm = input("\nAre you sure you want to clear the Pinecone Index? (y/n): ").strip().lower()
             if confirm == 'y':
                 print("[~] Deleting Index...")
-                rag_logic.clear_database(pc)
+                vector_store.clear_database(pc)
                 print("[+] Database cleared. Re-initializing empty index...")
-                pc = rag_logic.init_pinecone(pinecone_api_key)
-                vector_store = rag_logic.get_vector_store(embeddings, pinecone_api_key)
+                pc = vector_store.init_pinecone(pinecone_api_key)
+                vs = vector_store.get_vector_store(embeddings, pinecone_api_key)
                 
         elif choice == "4":
             print("\nGoodbye!")

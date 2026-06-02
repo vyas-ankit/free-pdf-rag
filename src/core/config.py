@@ -73,3 +73,8 @@ def get_semantic_cache_config() -> dict:
 def get_ingestion_config() -> dict:
     """Return ingestion tuning params (pdf_extraction markers, chunking max_words, etc.)."""
     return get_config().get("ingestion", {})
+
+
+def get_guards_config() -> dict:
+    """Return guardrail params (input/output guards and their tuning)."""
+    return get_config().get("guards", {})

@@ -14,6 +14,13 @@
       "api_key_env": "GROQ_API_KEY",
       "request_timeout": 120,
       "temperature": 0
+    },
+    "openai": {
+      "default_model": "gpt-4o-mini",
+      "vision_model": "gpt-4o",
+      "api_key_env": "OPENAI_API_KEY",
+      "request_timeout": 120,
+      "temperature": 0
     }
   },
   "embeddings": {
@@ -67,6 +74,35 @@
     },
     "chunking": {
       "max_words": 300
+    }
+  },
+  "guards": {
+    "input": {
+      "length": {
+        "enabled": true,
+        "max_tokens": 5000,
+        "encoder": "cl100k_base"
+      },
+      "moderation": {
+        "enabled": true,
+        "model": "omni-moderation-latest",
+        "max_tokens": 400,
+        "thresholds": {
+          "harassment":              0.5,
+          "harassment/threatening":  0.5,
+          "hate":                    0.5,
+          "hate/threatening":        0.5,
+          "illicit":                 0.5,
+          "illicit/violent":         0.5,
+          "self_harm":               0.4,
+          "self_harm/intent":        0.3,
+          "self_harm/instructions":  0.3,
+          "sexual":                  0.5,
+          "sexual/minors":           0.1,
+          "violence":                0.7,
+          "violence/graphic":        0.7
+        }
+      }
     }
   }
 }

@@ -10,16 +10,13 @@ SYSTEM_RAG_PROMPT = (
 
 # 2. Query Rewriter Prompt (Resolves conversational history into a standalone question)
 QUERY_REWRITER_PROMPT = """\
-You rewrite the user's latest message into a single, standalone question.
-Your ONLY job is to resolve references like "it", "that", "those", "the same one",
-"do it again" against the prior turns. If the latest message is already standalone,
-return it unchanged.
+You rewrite the user's latest message into a single, standalone query using the current query and previous conversation context.
 
 STRICT OUTPUT RULES:
-- Output ONLY the rewritten question on a single line.
+- Output ONLY the rewritten query.
 - No answer. No list. No bullets. No markdown. No bold. No code blocks.
 - No explanations. No quotes around the output. No prefix like "Rewritten:".
-- Maximum one sentence. Length must be roughly similar to the original message.
+- Maximum one sentence.
 
 Examples:
 

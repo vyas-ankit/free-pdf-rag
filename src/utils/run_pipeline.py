@@ -69,7 +69,6 @@ def run_full_pipeline(pdf_path: str, output_base_folder: str = None) -> dict:
     metadata = extract_metadata_with_llm(
         metadata_txt_path=metadata_txt,
         output_json_path=metadata_json,
-        provider="groq"  # Uses free Groq API (no quota limits)
     )
 
     if not metadata:

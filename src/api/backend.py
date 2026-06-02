@@ -5,7 +5,7 @@ import shutil
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from src.core import rag_logic
+from src.core import rag_logic, vector_store, aws
 
 app = FastAPI(title="RAG Backend API")
 
@@ -24,12 +24,12 @@ AWS_REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
 S3_BUCKET = os.getenv("AWS_S3_BUCKET_NAME")
 
 # Initialize RAG resources
-embeddings = rag_logic.get_embeddings()
-rag_logic.init_semantic_cache(embeddings)
+embeddings = vector_store.get_embeddings()
+vector_store.init_semantic_cache(embeddings)
 
-pc = rag_logic.init_pinecone(PINECONE_API_KEY)
-s3_client = rag_logic.get_s3_client(region=AWS_REGION) # Uses IAM Task Role
-vector_store = rag_logic.get_vector_store(embeddings, PINECONE_API_KEY)
+pc = vector_store.init_pinecone(PINECONE_API_KEY)
+s3_client = aws.get_s3_client(region=AWS_REGION)  # Uses IAM Task Role
+vs = vector_store.get_vector_store(embeddings, PINECONE_API_KEY)
 
 class QueryRequest(BaseModel):
     query: str
@@ -45,7 +45,7 @@ def health_check():
 @app.get("/status")
 def get_status():
     """Check if database has vectors."""
-    has_vectors = rag_logic.check_index_has_vectors(pc)
+    has_vectors = vector_store.check_index_has_vectors(pc)
     return {"has_vectors": has_vectors}
 
 @app.post("/upload")
@@ -64,7 +64,7 @@ async def upload_file(
             shutil.copyfileobj(file.file, buffer)
 
         # 1. Archive raw PDF to S3
-        uploaded = rag_logic.upload_to_s3(temp_path, S3_BUCKET, s3_key, s3_client)
+        uploaded = aws.upload_to_s3(temp_path, S3_BUCKET, s3_key, s3_client)
         if not uploaded:
             raise HTTPException(status_code=500, detail="Failed to upload file to S3.")
 
@@ -74,7 +74,7 @@ async def upload_file(
             raise HTTPException(status_code=500, detail="Extraction pipeline failed.")
 
         # 3. Ingest chunks into Pinecone with role-based metadata
-        vector_count = rag_logic.ingest_chunks_from_json(
+        vector_count = vector_store.ingest_chunks_from_json(
             chunks_json_path=result["output_json"],
             embeddings=embeddings,
             pinecone_api_key=PINECONE_API_KEY,
@@ -99,10 +99,10 @@ def query_endpoint(body: QueryRequest):
     try:
         answer = rag_logic.query_rag(
             body.query,
-            vector_store,
+            vs,
             user_id=body.user_id,
             session_id=body.session_id,
-            user_role=body.user_role
+            user_role=body.user_role,
         )
         return {"answer": answer}
     except Exception as e:
@@ -112,7 +112,7 @@ def query_endpoint(body: QueryRequest):
 def clear_db():
     """Clear database index."""
     try:
-        rag_logic.clear_database(pc)
+        vector_store.clear_database(pc)
         return {"status": "success", "message": "Database cleared"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -94,4 +94,14 @@ def get_llm(model_name: str = None, llm_api_key: str = None, provider: str = Non
             temperature=temperature
         )
 
+    if provider == "openai":
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            model=model_name,
+            api_key=api_key,
+            temperature=temperature,
+            timeout=int(os.getenv("LLM_REQUEST_TIMEOUT", str(provider_cfg.get("request_timeout", 120)))),
+        )
+
     raise ValueError(f"Unsupported LLM provider: {provider}")

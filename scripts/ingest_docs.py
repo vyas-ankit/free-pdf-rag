@@ -24,7 +24,7 @@ load_dotenv()
 # Cool-down between PDFs so the vision API rate-limit window resets.
 PER_FILE_COOLDOWN_SEC = int(os.getenv("PER_FILE_COOLDOWN_SEC", "15"))
 
-from src.core import rag_logic
+from src.core import vector_store
 from src.utils.run_pipeline import run_full_pipeline
 from langchain_pinecone import PineconeVectorStore
 
@@ -212,16 +212,16 @@ for idx, pdf in enumerate(pdfs):
 # ----------------------- STEP 2: Pinecone push -----------------------
 
 print(f"\n[~] Connecting to Pinecone...")
-embeddings = rag_logic.get_embeddings()
-pc = rag_logic.init_pinecone(PINECONE_API_KEY)
+embeddings = vector_store.get_embeddings()
+pc = vector_store.init_pinecone(PINECONE_API_KEY)
 
 if CLEAR_ALL:
     print("[~] CLEAR_ALL_BEFORE_INGEST=1 → clearing all vectors in index...")
-    rag_logic.clear_vectors(pc)
+    vector_store.clear_vectors(pc)
 
 # Single shared vector store (avoids the ThreadPool/FD leak on long runs)
 shared_vector_store = PineconeVectorStore(
-    index_name=rag_logic.INDEX_NAME,
+    index_name=vector_store.INDEX_NAME,
     embedding=embeddings,
     pinecone_api_key=PINECONE_API_KEY,
 )
@@ -242,7 +242,7 @@ for pdf in pdfs:
     print(f"\n--- {folder.name} ({pdf.name}) ---")
     role = ROLE_MAPPING.get(pdf.name, "Public")
     try:
-        vectors_upserted = rag_logic.ingest_chunks_from_json(
+        vectors_upserted = vector_store.ingest_chunks_from_json(
             chunks_json_path=str(chunks_json),
             embeddings=embeddings,
             pinecone_api_key=PINECONE_API_KEY,

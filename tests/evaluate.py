@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from langsmith import Client
 from langsmith.evaluation import evaluate, LangChainStringEvaluator
 from src.core.llm import get_llm
-from src.core import rag_logic
+from src.core import rag_logic, vector_store
 
 load_dotenv()
 
@@ -19,9 +19,9 @@ if not all([PINECONE_API_KEY, LLM_API_KEY]):
     exit(1)
 
 print("[~] Initializing local RAG components...")
-embeddings = rag_logic.get_embeddings()
-pc = rag_logic.init_pinecone(PINECONE_API_KEY)
-vector_store = rag_logic.get_vector_store(embeddings, PINECONE_API_KEY)
+embeddings = vector_store.get_embeddings()
+pc = vector_store.init_pinecone(PINECONE_API_KEY)
+vs = vector_store.get_vector_store(embeddings, PINECONE_API_KEY)
 client = Client()
 
 # --- DEFINE AUTOMATED EVALUATORS (LLM-AS-A-JUDGE) ---
@@ -59,7 +59,7 @@ def predict_agentic_strict(inputs: dict):
     )
     response = rag_logic.query_rag(
         user_query=inputs["question"],
-        vector_store=vector_store,
+        vector_store=vs,
         llm_api_key=LLM_API_KEY,
         user_role="Public",
         final_k=5,
