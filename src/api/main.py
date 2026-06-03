@@ -5,6 +5,7 @@ import sys
 from dotenv import load_dotenv
 load_dotenv()
 from src.core import rag_logic, vector_store, aws
+from src.core.rag_simple import query_rag_simple
 
 
 def main():
@@ -120,9 +121,10 @@ def main():
                 
                 print("Assistant is thinking...")
                 try:
-                    answer = rag_logic.query_rag(
+                    answer = query_rag_simple(
                         user_query,
                         vs,
+                        session_id="cli_session",
                         user_role=user_role,
                     )
                     print(f"\nAssistant: {answer}")

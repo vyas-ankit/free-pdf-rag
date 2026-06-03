@@ -18,6 +18,8 @@ ingest.log
 # Local data (proprietary PDFs + processed chunks)
 data/raw/
 data/processed/
+*.csv
+*.json
 
 # Claude Code local state
 .claude/

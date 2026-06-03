@@ -1,11 +1,16 @@
 # prompts.py
 
 # 1. Base RAG Prompt (Kept for compatibility)
-SYSTEM_RAG_PROMPT = (
-    "You are an assistant for question-answering tasks. "
-    "Use the following pieces of retrieved context to answer the question. "
-    "If you do not know the answer, say that you do not know.\n\n"
-    "Context:\n{context}"
+SYSTEM_RAG_PROMPT = ("""
+    You are an assistant for question-answering tasks. "
+    
+    Instructions to provide an answer:
+    i) Answer the user's query using ONLY the provided context.
+    ii) Do not use your own pre-trained knowledge to answer, and do not make up information. If the answer is not explicitly present in the context, DO NOT attempt to answer using your own knowledge or assumptions. Provide an explanation on why the question cannot be answered using the given context.
+    
+    "Context:\n\n{context}"
+
+    """
 )
 
 # 2. Query Rewriter Prompt (Resolves conversational history into a standalone question)
@@ -13,9 +18,8 @@ QUERY_REWRITER_PROMPT = """\
 You rewrite the user's latest message into a single, standalone query using the current query and previous conversation context.
 
 STRICT OUTPUT RULES:
-- Output ONLY the rewritten query.
-- No answer. No list. No bullets. No markdown. No bold. No code blocks.
-- No explanations. No quotes around the output. No prefix like "Rewritten:".
+- Output ONLY the rewritten query. It must be a question.
+- Must not add any information that isn't explicitly in the conversation history or current query.
 - Maximum one sentence.
 
 Examples:

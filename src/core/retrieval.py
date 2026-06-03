@@ -233,5 +233,25 @@ def retrieve_hybrid_and_rerank(
 # ----------------------- Output formatting -----------------------
 
 def format_docs(docs) -> str:
-    """Join retrieved chunks into a single string for the LLM prompt context."""
-    return "\n\n".join(doc.page_content for doc in docs)
+    """Join retrieved chunks into a single string for the LLM prompt context.
+
+    Each chunk is prefixed with its source metadata so the LLM can cite
+    sources, reason chronologically, and distinguish between documents.
+    """
+    parts = []
+    for doc in docs:
+        m = doc.metadata
+        source = m.get("source_pdf", "")
+        date = m.get("date", "")
+        theme = m.get("theme", "")
+        header_parts = []
+        if source:
+            header_parts.append(f"Source: {source}")
+        if date:
+            header_parts.append(f"Date: {date}")
+        if theme:
+            header_parts.append(f"Theme: {theme}")
+        header = f"[{' | '.join(header_parts)}]" if header_parts else ""
+        chunk_text = f"{header}\n{doc.page_content}" if header else doc.page_content
+        parts.append(chunk_text)
+    return "\n\n---\n\n".join(parts)
