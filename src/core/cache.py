@@ -48,7 +48,15 @@ class SemanticQueryCache:
         self.enabled             = bool(cfg.get("enabled", True))
         self.max_entries         = int(cfg.get("max_entries", 10))
         self.similarity_threshold = float(cfg.get("similarity_threshold", 0.90))
-        self.cache_path          = Path(cfg.get("cache_path", "data/cache/query_cache.json"))
+        raw_path = cfg.get("cache_path", "data/cache/query_cache.json")
+        p = Path(raw_path)
+        # If the configured path is relative, anchor it to the repo root so
+        # it resolves correctly regardless of the process working directory
+        # (e.g. when Claude Desktop spawns the MCP server).
+        if not p.is_absolute():
+            repo_root = Path(__file__).resolve().parent.parent.parent
+            p = repo_root / p
+        self.cache_path = p
         self._entries: List[dict] = []
         self._embeddings_model   = None   # lazy-loaded
         self._load()
