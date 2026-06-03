@@ -78,3 +78,8 @@ def get_ingestion_config() -> dict:
 def get_guards_config() -> dict:
     """Return guardrail params (input/output guards and their tuning)."""
     return get_config().get("guards", {})
+
+
+def get_query_cache_config() -> dict:
+    """Return semantic query cache params (enabled, max_entries, threshold, path)."""
+    return get_config().get("query_cache", {})

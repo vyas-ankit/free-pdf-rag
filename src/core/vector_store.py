@@ -55,10 +55,20 @@ def init_semantic_cache(embeddings):
 
 # ----------------------- Index lifecycle -----------------------
 
+def _index_exists(pc: Pinecone) -> bool:
+    """Compatible check for both old and new Pinecone client APIs."""
+    try:
+        # pinecone-client >= 3.x
+        return pc.has_index(INDEX_NAME)
+    except AttributeError:
+        # pinecone-client 5.x removed has_index — use list_indexes instead
+        return INDEX_NAME in [idx.name for idx in pc.list_indexes().indexes]
+
+
 def init_pinecone(api_key: str) -> Pinecone:
     """Initialize Pinecone client; create index from config if it doesn't exist."""
     pc = Pinecone(api_key=api_key)
-    if not pc.has_index(INDEX_NAME):
+    if not _index_exists(pc):
         pc_cfg = get_pinecone_config()
         dimension = int(pc_cfg.get("dimension", 384))
         metric = pc_cfg.get("metric", "cosine")
@@ -93,7 +103,7 @@ def check_index_has_vectors(pc: Pinecone) -> bool:
 
 def clear_database(pc: Pinecone):
     """Delete the entire Pinecone index (destructive — index must be recreated)."""
-    if pc.has_index(INDEX_NAME):
+    if _index_exists(pc):
         pc.delete_index(INDEX_NAME)
 
 
@@ -103,7 +113,7 @@ def clear_vectors(pc: Pinecone, namespace: str = "") -> int:
     Returns the number of vectors that existed before deletion.
     Prefer this over clear_database() for routine re-ingestion.
     """
-    if not pc.has_index(INDEX_NAME):
+    if not _index_exists(pc):
         print(f"Index '{INDEX_NAME}' does not exist — nothing to clear")
         return 0
 
@@ -178,7 +188,7 @@ def ingest_chunks_from_json(
     # --- Optional: clear previous vectors for this source ---
     if replace_existing:
         pc = Pinecone(api_key=pinecone_api_key)
-        if pc.has_index(INDEX_NAME):
+        if _index_exists(pc):
             try:
                 pc.Index(INDEX_NAME).delete(filter={"source_pdf": {"$eq": source_pdf}})
                 print(f"  ✓ Cleared existing vectors for source_pdf={source_pdf}")

@@ -34,6 +34,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_pinecone import PineconeVectorStore
 from langsmith import traceable
 
+from src.core.cache import get_cache
 from src.core.guards import run_input_guards
 from src.core.llm import get_default_model, get_llm
 from src.core.prompts import QUERY_REWRITER_PROMPT, SYSTEM_RAG_PROMPT
@@ -199,11 +200,20 @@ def query_rag_simple(
     history = _get_history(session_id)
     resolved_candidate_k = candidate_k or candidate_k_default()
     resolved_final_k = final_k or final_k_default()
+    is_first_turn = len(history) == 0
 
-    # ── 3. Rewrite query (pronoun resolution) ─────────────────────────────
+    # ── 3. Cache lookup (first turn only) ────────────────────────────────
+    # Subsequent turns depend on conversation history so must always retrieve.
+    if is_first_turn and not return_contexts and not skip_guards:
+        cached = get_cache().get(user_query)
+        if cached is not None:
+            _append_history(session_id, user_query, cached)
+            return cached
+
+    # ── 4. Rewrite query (pronoun resolution) ─────────────────────────────
     rewritten = _rewrite_query(user_query, history, model_name)
 
-    # ── 4. Retrieve ───────────────────────────────────────────────────────
+    # ── 5. Retrieve ───────────────────────────────────────────────────────
     docs = retrieve_hybrid_and_rerank(
         query=rewritten,
         vector_store=vector_store,
@@ -213,11 +223,15 @@ def query_rag_simple(
     )
     context = format_docs(docs)
 
-    # ── 5. Generate answer ────────────────────────────────────────────────
+    # ── 6. Generate answer ────────────────────────────────────────────────
     answer = _generate_answer(rewritten, context, history, model_name, prompt_template)
 
-    # ── 6. Persist turn to session history ────────────────────────────────
+    # ── 7. Persist turn to session history ───────────────────────────────
     _append_history(session_id, user_query, answer)
+
+    # ── 8. Cache write (first turn only, not eval mode) ──────────────────
+    if is_first_turn and not return_contexts and not skip_guards:
+        get_cache().set(user_query, answer)
 
     if return_contexts:
         return {

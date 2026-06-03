@@ -76,6 +76,12 @@
       "max_words": 300
     }
   },
+  "query_cache": {
+    "enabled": true,
+    "max_entries": 10,
+    "similarity_threshold": 0.90,
+    "cache_path": "data/cache/query_cache.json"
+  },
   "guards": {
     "input": {
       "length": {
