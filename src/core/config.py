@@ -60,6 +60,11 @@ def get_retrieval_config() -> dict:
     return get_config().get("retrieval", {})
 
 
+def get_tool_calling_config() -> dict:
+    """Return tool-calling tuning params."""
+    return get_config().get("tool_calling", {})
+
+
 def get_image_desc_config() -> dict:
     """Return image-description tuning params (downscale, etc.)."""
     return get_config().get("image_descriptions", {})

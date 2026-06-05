@@ -12,10 +12,16 @@ Architecture per turn:
     query_rewriter        (LangChain LCEL — resolves pronouns using history)
         │
         ▼
-    retriever             (hybrid dense + BM25 + cross-encoder rerank)
+    query_expander        (creates 1-N focused retrieval queries)
         │
         ▼
-    answer_chain          (LangChain LCEL — context + history + query → answer)
+    hard retrieval        (retrieve_knowledge_base is called for every expanded query)
+        │
+        ▼
+    tool_calling_llm      (can call retrieve_knowledge_base again if useful)
+        │
+        ▼
+    final answer          (LLM answers from retrieved tool results)
         │
         ▼
     answer (str)
@@ -26,24 +32,31 @@ no checkpointer — just a plain list of LangChain BaseMessages per session_id.
 LangSmith tracing is applied at every stage via @traceable decorators.
 """
 
+import json
+import re
 from typing import Dict, List, Optional, Union
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_pinecone import PineconeVectorStore
 from langsmith import traceable
 
 from src.core.cache import get_cache
+from src.core.config import get_tool_calling_config
 from src.core.guards import run_input_guards
 from src.core.llm import get_default_model, get_llm
-from src.core.prompts import QUERY_REWRITER_PROMPT, SYSTEM_RAG_PROMPT
+from src.core.prompts import (
+    QUERY_EXPANSION_PROMPT,
+    QUERY_REWRITER_PROMPT,
+    SYSTEM_RAG_PROMPT,
+    TOOL_RAG_SYSTEM_PROMPT,
+)
 from src.core.retrieval import (
     candidate_k_default,
     final_k_default,
-    format_docs,
-    retrieve_hybrid_and_rerank,
 )
+from src.core.tools import make_retrieval_tool
 
 
 ACTIVE_LLM_MODEL = get_default_model()
@@ -73,6 +86,37 @@ def clear_session(session_id: str) -> None:
     """Reset conversation history and raw log for a session."""
     _session_histories.pop(session_id, None)
     _raw_user_logs.pop(session_id, None)
+
+
+def max_tool_call_rounds_default() -> int:
+    return int(get_tool_calling_config().get("max_tool_call_rounds", 4))
+
+
+def query_expansion_enabled() -> bool:
+    cfg = get_tool_calling_config().get("query_expansion", {})
+    return bool(cfg.get("enabled", True))
+
+
+def max_expanded_queries_default() -> int:
+    cfg = get_tool_calling_config().get("query_expansion", {})
+    return int(cfg.get("max_queries", 4))
+
+
+def _dedupe_queries(queries: List[str], max_queries: int) -> List[str]:
+    seen = set()
+    deduped = []
+    for query in queries:
+        cleaned = " ".join(str(query).strip().split())
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(cleaned)
+        if len(deduped) >= max_queries:
+            break
+    return deduped
 
 
 # ── Query rewriter ────────────────────────────────────────────────────────
@@ -110,6 +154,49 @@ def _rewrite_query(user_query: str, history: List[BaseMessage],
     return rewritten
 
 
+# ── Query expansion ──────────────────────────────────────────────────────
+
+@traceable(name="rag_simple.query_expander", run_type="llm",
+           metadata={"component": "query_expander"})
+def _expand_queries(rewritten_query: str, history: List[BaseMessage],
+                    model_name: str) -> List[str]:
+    """Generate focused retrieval queries before the hard retrieval pass."""
+    max_queries = max(1, max_expanded_queries_default())
+    if not query_expansion_enabled() or max_queries == 1:
+        return [rewritten_query]
+
+    llm = get_llm(model_name=model_name)
+    history_text = "\n".join(
+        f"{'user' if isinstance(msg, HumanMessage) else 'assistant'}: {msg.content}"
+        for msg in history[-6:]
+    ) or "(no prior conversation)"
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", QUERY_EXPANSION_PROMPT),
+    ])
+    chain = prompt | llm | StrOutputParser()
+    raw = (chain.invoke({
+        "history": history_text,
+        "question": rewritten_query,
+        "max_queries": max_queries,
+    }) or "").strip()
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw)
+
+    try:
+        payload = json.loads(cleaned)
+        queries = payload.get("queries", [])
+        if not isinstance(queries, list):
+            queries = []
+    except json.JSONDecodeError:
+        queries = []
+
+    expanded = _dedupe_queries([rewritten_query, *queries], max_queries)
+    if not expanded:
+        expanded = [rewritten_query]
+
+    print(f"[rag_simple] Expanded retrieval queries: {expanded!r}")
+    return expanded
+
+
 # ── Answer chain ──────────────────────────────────────────────────────────
 
 @traceable(name="rag_simple.answer_chain", run_type="llm",
@@ -136,6 +223,95 @@ def _generate_answer(rewritten_query: str, context: str,
         "history": history,
         "question": rewritten_query,
     })
+
+
+# ── Tool-calling answer loop ─────────────────────────────────────────────
+
+@traceable(name="rag_simple.tool_calling_answer", run_type="chain",
+           metadata={"component": "tool_calling_answer"})
+def _generate_answer_with_retrieval_tool(
+    user_query: str,
+    rewritten_query: str,
+    retrieval_queries: List[str],
+    history: List[BaseMessage],
+    vector_store: PineconeVectorStore,
+    user_role: str,
+    candidate_k: int,
+    final_k: int,
+    model_name: str,
+    prompt_template: Optional[str],
+) -> tuple[str, List[str]]:
+    """Force one retrieval, then let the LLM decide whether to retrieve more."""
+    retrieved_contexts: List[str] = []
+    retrieve_knowledge_base = make_retrieval_tool(
+        vector_store=vector_store,
+        user_role=user_role,
+        candidate_k=candidate_k,
+        final_k=final_k,
+        retrieved_contexts=retrieved_contexts,
+    )
+
+    system = prompt_template or TOOL_RAG_SYSTEM_PROMPT
+    if "{context}" in system:
+        system = system.replace(
+            "{context}",
+            "Use the retrieve_knowledge_base tool to obtain context when needed.",
+        )
+
+    llm = get_llm(model_name=model_name)
+    llm_with_tools = llm.bind_tools([retrieve_knowledge_base])
+
+    question = rewritten_query if rewritten_query != user_query else user_query
+    messages: List[BaseMessage] = [
+        SystemMessage(content=system),
+        *history,
+        HumanMessage(content=question),
+    ]
+
+    hard_tool_calls = []
+    hard_tool_messages = []
+    for index, query in enumerate(retrieval_queries, start=1):
+        tool_call_id = f"hard_retrieval_{index}"
+        hard_tool_calls.append({
+            "name": "retrieve_knowledge_base",
+            "args": {"query": query},
+            "id": tool_call_id,
+        })
+        hard_tool_messages.append(
+            ToolMessage(
+                content=retrieve_knowledge_base.invoke({"query": query}),
+                tool_call_id=tool_call_id,
+                name="retrieve_knowledge_base",
+            )
+        )
+
+    messages.append(AIMessage(content="", tool_calls=hard_tool_calls))
+    messages.extend(hard_tool_messages)
+
+    for _ in range(max_tool_call_rounds_default()):
+        ai_msg = llm_with_tools.invoke(messages)
+        messages.append(ai_msg)
+
+        tool_calls = getattr(ai_msg, "tool_calls", None) or []
+        if not tool_calls:
+            return ai_msg.content or "", retrieved_contexts
+
+        for call in tool_calls:
+            if call.get("name") != "retrieve_knowledge_base":
+                content = f"Unknown tool requested: {call.get('name')}"
+            else:
+                content = retrieve_knowledge_base.invoke(call.get("args", {}))
+
+            messages.append(
+                ToolMessage(
+                    content=content,
+                    tool_call_id=call["id"],
+                    name=call.get("name"),
+                )
+            )
+
+    final_msg = llm.invoke(messages)
+    return final_msg.content or "", retrieved_contexts
 
 
 # ── Public entry point ────────────────────────────────────────────────────
@@ -213,18 +389,22 @@ def query_rag_simple(
     # ── 4. Rewrite query (pronoun resolution) ─────────────────────────────
     rewritten = _rewrite_query(user_query, history, model_name)
 
-    # ── 5. Retrieve ───────────────────────────────────────────────────────
-    docs = retrieve_hybrid_and_rerank(
-        query=rewritten,
+    # ── 5. Expand into focused retrieval queries ──────────────────────────
+    retrieval_queries = _expand_queries(rewritten, history, model_name)
+
+    # ── 6. Generate answer with retrieval as the only available tool ──────
+    answer, contexts = _generate_answer_with_retrieval_tool(
+        user_query=user_query,
+        rewritten_query=rewritten,
+        retrieval_queries=retrieval_queries,
+        history=history,
         vector_store=vector_store,
         user_role=user_role,
         candidate_k=resolved_candidate_k,
         final_k=resolved_final_k,
+        model_name=model_name,
+        prompt_template=prompt_template,
     )
-    context = format_docs(docs)
-
-    # ── 6. Generate answer ────────────────────────────────────────────────
-    answer = _generate_answer(rewritten, context, history, model_name, prompt_template)
 
     # ── 7. Persist turn to session history ───────────────────────────────
     _append_history(session_id, user_query, answer)
@@ -236,7 +416,7 @@ def query_rag_simple(
     if return_contexts:
         return {
             "answer": answer,
-            "contexts": [doc.page_content for doc in docs],
+            "contexts": contexts,
             "rewritten_query": rewritten,
         }
     return answer

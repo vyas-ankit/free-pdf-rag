@@ -64,6 +64,13 @@
     "candidate_k": 30,
     "final_k": 10
   },
+  "tool_calling": {
+    "max_tool_call_rounds": 4,
+    "query_expansion": {
+      "enabled": true,
+      "max_queries": 4
+    }
+  },
   "ingestion": {
     "pdf_extraction": {
       "skip_top_pct": 0.03,
