@@ -57,34 +57,38 @@ from src.core.retrieval import (
     final_k_default,
 )
 from src.core.tools import make_retrieval_tool
+from src.core.workflows.engine import (
+    _run_llm_extract,
+    run_workflow_step,
+)
+from src.core.workflows.intent_router import (
+    clear_pending_context_switch,
+    get_pending_context_switch,
+    route_intent,
+)
+from src.core import session_store
 
 
 ACTIVE_LLM_MODEL = get_default_model()
 
-# Per-session conversation history — keyed by session_id.
-# Each value is a list of HumanMessage / AIMessage objects.
-_session_histories: Dict[str, List[BaseMessage]] = {}
-
-# Per-session raw user log for multi-turn moderation guard.
+# Per-session raw user log for multi-turn moderation guard (still in-memory — not persisted).
 _raw_user_logs: Dict[str, List[str]] = {}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 def _get_history(session_id: str) -> List[BaseMessage]:
-    return _session_histories.get(session_id, [])
+    return session_store.get_history(session_id)
 
 
 def _append_history(session_id: str, human: str, ai: str) -> None:
-    if session_id not in _session_histories:
-        _session_histories[session_id] = []
-    _session_histories[session_id].append(HumanMessage(content=human))
-    _session_histories[session_id].append(AIMessage(content=ai))
+    session_store.append_history(session_id, human, ai)
 
 
 def clear_session(session_id: str) -> None:
-    """Reset conversation history and raw log for a session."""
-    _session_histories.pop(session_id, None)
+    """Reset conversation history, workflow state, and raw log for a session."""
+    session_store.clear_history(session_id)
+    session_store.clear_workflow_state(session_id)
     _raw_user_logs.pop(session_id, None)
 
 
@@ -189,7 +193,7 @@ def _expand_queries(rewritten_query: str, history: List[BaseMessage],
     except json.JSONDecodeError:
         queries = []
 
-    expanded = _dedupe_queries([rewritten_query, *queries], max_queries)
+    expanded = _dedupe_queries(queries, max_queries)
     if not expanded:
         expanded = [rewritten_query]
 
@@ -378,7 +382,83 @@ def query_rag_simple(
     resolved_final_k = final_k or final_k_default()
     is_first_turn = len(history) == 0
 
-    # ── 3. Cache lookup (first turn only) ────────────────────────────────
+    # ── 3a. Workflow routing ──────────────────────────────────────────────
+    # Check if we are mid-action and waiting for context-switch confirmation
+    pending_switch = get_pending_context_switch(session_id)
+    if pending_switch:
+        extracted, _ = _run_llm_extract(
+            {"extract": [{"name": "confirmed", "required": True, "type": "boolean"}]},
+            user_query, history, {}, model_name,
+        )
+        confirmed = extracted.get("confirmed") is True
+        print(f"[rag_simple] context-switch confirmation: confirmed={confirmed!r}")
+        if confirmed:
+            # User confirmed abandonment — clear action state and run pending intent
+            session_store.clear_workflow_state(session_id)
+            clear_pending_context_switch(session_id)
+            pending_intent = pending_switch["pending_intent"]
+            pending_query = pending_switch["pending_query"]
+            if pending_intent == "RAG":
+                user_query = pending_query
+            else:
+                _append_history(session_id, user_query, "")
+                result = run_workflow_step(pending_intent.lower(), pending_query, history, session_id, model_name)
+                _append_history(session_id, pending_query, result)
+                return result if not return_contexts else {"answer": result, "contexts": [], "rewritten_query": pending_query}
+        else:
+            clear_pending_context_switch(session_id)
+            active_state = session_store.get_workflow_state(session_id)
+            if active_state:
+                result = run_workflow_step(active_state["workflow"], user_query, history, session_id, model_name)
+                _append_history(session_id, user_query, result)
+                return result if not return_contexts else {"answer": result, "contexts": [], "rewritten_query": user_query}
+
+    # Check if a workflow is already in progress
+    active_state = session_store.get_workflow_state(session_id)
+    active_workflow = active_state["workflow"] if active_state else None
+
+    if not skip_guards:
+        intent = route_intent(user_query, history, session_id, active_workflow, model_name)
+    else:
+        intent = "RAG"
+
+    if intent == "CONTINUE":
+        if not active_workflow:
+            # No workflow actually active — treat as RAG
+            intent = "RAG"
+        else:
+            print(f"[rag_simple] continuing workflow: {active_workflow!r}")
+            result = run_workflow_step(active_workflow, user_query, history, session_id, model_name)
+            _append_history(session_id, user_query, result)
+            return result if not return_contexts else {"answer": result, "contexts": [], "rewritten_query": user_query}
+
+    if intent == "CONTEXT_SWITCH":
+        pending = get_pending_context_switch(session_id)
+        action_label = active_workflow.replace("_", " ") if active_workflow else "current action"
+        if pending and pending["pending_intent"] == "RAG":
+            confirm_msg = (
+                f"You're in the middle of '{action_label}'. "
+                f"If you abandon it, you'll need to restart from scratch if you want to do it later. "
+                f"Do you want to abandon it and answer your question instead? (yes/no)"
+            )
+        else:
+            confirm_msg = (
+                f"You're in the middle of '{action_label}'. "
+                f"If you abandon it, you'll need to restart from scratch if you want to do it later. "
+                f"Do you want to abandon it and start a different action? (yes/no)"
+            )
+        _append_history(session_id, user_query, confirm_msg)
+        return confirm_msg if not return_contexts else {"answer": confirm_msg, "contexts": [], "rewritten_query": user_query}
+
+    if intent in ("BOOK_DESK", "SUBMIT_VACATION"):
+        workflow_name = intent.lower()
+        result = run_workflow_step(workflow_name, user_query, history, session_id, model_name)
+        _append_history(session_id, user_query, result)
+        return result if not return_contexts else {"answer": result, "contexts": [], "rewritten_query": user_query}
+
+    # intent == "RAG" — fall through to existing flow
+
+    # ── 3b. Cache lookup (first turn only) ───────────────────────────────
     # Subsequent turns depend on conversation history so must always retrieve.
     if is_first_turn and not return_contexts and not skip_guards:
         cached = get_cache().get(user_query)

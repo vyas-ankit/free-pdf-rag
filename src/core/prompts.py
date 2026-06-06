@@ -45,7 +45,6 @@ relationships. Keep each query specific and concise.
 Rules:
 - Return valid JSON only, no markdown.
 - JSON shape: {{"queries": ["query 1", "query 2"]}}
-- Include the original standalone question as one query unless it is too vague.
 - Generate between 1 and {max_queries} queries.
 - Do not add facts that are not present in the question or conversation.
 - Prefer focused phrases over long full-sentence questions.
@@ -235,7 +234,65 @@ Use the string "$step_N" in args to reference the result of step N.
 USER QUERY: {user_query}"""
 
 
-# 8. Synthesizer Prompt — assembles a final answer from all step results.
+# 8. Intent Router Prompt — classifies user query into RAG or a named workflow intent.
+# Placeholders: {history}, {user_query}, {active_workflow}, {available_workflows}
+INTENT_ROUTER_PROMPT = """\
+You are an intent classifier for a corporate assistant.
+
+Classify the user's query as exactly one of:
+- CONTINUE — the user is replying within or continuing the active workflow.
+- RAG — the user wants information, facts, explanation, or clarification.
+- BOOK_DESK — the user wants to book / reserve a desk.
+- SUBMIT_VACATION — the user wants to submit vacation or holiday leave.
+
+Available workflows: {available_workflows}
+Active workflow (if any): {active_workflow}
+
+Rules:
+1. If a workflow is active, look at the assistant's last message in the conversation history. If the user's message is a plausible reply to that question (e.g. a date, a floor number, a yes/no, a name), return CONTINUE. When in doubt and a workflow is active, prefer CONTINUE.
+2. Only return RAG or a different workflow label if the user's message is unambiguously off-topic — e.g. they ask a factual question completely unrelated to the active workflow.
+3. If no workflow is active, classify freely: RAG, BOOK_DESK, or SUBMIT_VACATION.
+4. Respond with a single label only — no explanation, no punctuation.
+
+Conversation history:
+{history}
+
+User query: {user_query}
+"""
+
+
+# 9. Param Extraction Prompt — extracts workflow parameters from user message.
+# Placeholders: {params}, {already_collected}, {history}, {user_query}
+PARAM_EXTRACTION_PROMPT = """\
+You are extracting parameters from a user message for a workflow.
+
+Parameters to extract (JSON array):
+{params}
+
+Already collected (do not re-extract these):
+{already_collected}
+
+Conversation history:
+{history}
+
+User message: {user_query}
+
+Rules:
+- Extract only parameters that are not already collected.
+- For any parameter you cannot find, return null for that key.
+- Respect the type field for each parameter:
+  - "string": return as a string
+  - "integer": return as a plain integer (e.g. "7th floor" → 7, "third" → 3)
+  - "float": return as a number
+  - "boolean": return true or false
+- If a parameter has a format field, return the value in exactly that format:
+  - "YYYY-MM-DD": convert any natural language date to this format using today's date ({today}) as reference (e.g. "june 9" → "2026-06-09", "tomorrow" → the correct date)
+- Return valid JSON only — no markdown, no explanation.
+Example output: {{"date": "2026-06-10", "floor": 7}}
+"""
+
+
+# 10. Synthesizer Prompt — assembles a final answer from all step results.
 # Placeholders: {user_query}, {conversation_history}, {step_results_text}
 SYNTHESIZER_PROMPT = """\
 You are a corporate assistant. Using the results of the completed plan steps \

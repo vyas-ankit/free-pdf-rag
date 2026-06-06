@@ -1,0 +1,47 @@
+name: book_desk
+intent: BOOK_DESK
+
+steps:
+
+  - id: check_availability
+    type: tool_call
+    tool: fetch_location
+    args:
+      user_id: "{{user_id}}"
+
+  - id: extract_params
+    type: llm_extract
+    extract:
+      - name: start_date
+        required: true
+        type: string
+        format: "YYYY-MM-DD"
+        ask: "What date (or start date) would you like to book the desk? (e.g. June 9, or June 9 to June 11)"
+      - name: end_date
+        required: false
+        type: string
+        format: "YYYY-MM-DD"
+        default: null
+        ask: "What is the end date? (leave blank if booking a single day)"
+      - name: floor
+        required: true
+        type: integer
+        ask: "Which floor would you prefer?"
+
+
+  - id: confirm
+    type: user_confirmation
+    message: "Just to confirm — book a desk on floor {{floor}} from {{start_date}} to {{end_date}}? (yes/no)"
+
+  - id: book
+    type: tool_call
+    tool: book_desk_tool
+    args:
+      user_id: "{{user_id}}"
+      start_date: "{{start_date}}"
+      end_date: "{{end_date}}"
+      floor: "{{floor}}"
+
+  - id: done
+    type: respond
+    message: "Done! Your desk has been booked on floor {{floor}} from {{start_date}} to {{end_date}}."

@@ -38,6 +38,7 @@ PROCESSED_DIR = Path("data/processed")
 STATS_PATH = PROCESSED_DIR / "_ingest_stats.json"
 REPROCESS_ALL = os.getenv("REPROCESS_ALL", "0").lower() in {"1", "true", "yes"}
 CLEAR_ALL = os.getenv("CLEAR_ALL_BEFORE_INGEST", "0").lower() in {"1", "true", "yes"}
+FORCE_UPSERT_ALL = os.getenv("FORCE_UPSERT_ALL", "0").lower() in {"1", "true", "yes"}
 ROLE_MAPPING = {}  # all PDFs → "Public" by default
 
 
@@ -190,7 +191,7 @@ if not pdfs:
     exit(0)
 
 print(f"[~] Found {len(pdfs)} PDF(s) in {RAW_DIR}/")
-processed_count = 0
+newly_processed: set[str] = set()  # track PDFs processed this run
 for idx, pdf in enumerate(pdfs):
     if not REPROCESS_ALL and find_processed_folder(pdf.name):
         print(f"  ✓ Skipping {pdf.name} (already processed; set REPROCESS_ALL=1 to redo)")
@@ -199,7 +200,8 @@ for idx, pdf in enumerate(pdfs):
     result = run_full_pipeline(str(pdf), str(PROCESSED_DIR))
     if not result:
         print(f"  ✗ Failed to process {pdf.name}")
-    processed_count += 1
+    else:
+        newly_processed.add(pdf.name)
 
     # Only cool down if THIS file hit rate limits — otherwise the vision API
     # is happy and we shouldn't waste minutes idling.
@@ -209,28 +211,29 @@ for idx, pdf in enumerate(pdfs):
         time.sleep(PER_FILE_COOLDOWN_SEC)
 
 
-# ----------------------- STEP 2: Pinecone push -----------------------
-
-print(f"\n[~] Connecting to Pinecone...")
-embeddings = vector_store.get_embeddings()
-pc = vector_store.init_pinecone(PINECONE_API_KEY)
-
-if CLEAR_ALL:
-    print("[~] CLEAR_ALL_BEFORE_INGEST=1 → clearing all vectors in index...")
-    vector_store.clear_vectors(pc)
-
-# Single shared vector store (avoids the ThreadPool/FD leak on long runs)
-shared_vector_store = PineconeVectorStore(
-    index_name=vector_store.INDEX_NAME,
-    embedding=embeddings,
-    pinecone_api_key=PINECONE_API_KEY,
-)
-
-# ----------------------- STEP 3: per-PDF stats + ingest -----------------------
+# ----------------------- STEP 2 & 3: Pinecone push -----------------------
 
 all_stats: List[dict] = []
 
-for pdf in pdfs:
+pdfs_to_ingest = pdfs if (REPROCESS_ALL or FORCE_UPSERT_ALL) else [p for p in pdfs if p.name in newly_processed]
+if not pdfs_to_ingest:
+    print(f"\n[~] No new PDFs to upsert — Pinecone is already up to date.")
+else:
+    print(f"\n[~] Upserting {len(pdfs_to_ingest)} new PDF(s) to Pinecone...")
+    embeddings = vector_store.get_embeddings()
+    pc = vector_store.init_pinecone(PINECONE_API_KEY)
+
+    if CLEAR_ALL:
+        print("[~] CLEAR_ALL_BEFORE_INGEST=1 → clearing all vectors in index...")
+        vector_store.clear_vectors(pc)
+
+    shared_vector_store = PineconeVectorStore(
+        index_name=vector_store.INDEX_NAME,
+        embedding=embeddings,
+        pinecone_api_key=PINECONE_API_KEY,
+    )
+
+for pdf in pdfs_to_ingest:
     folder = find_processed_folder(pdf.name)
     if folder is None:
         print(f"⚠ No processed folder for {pdf.name}; skipping ingest.")

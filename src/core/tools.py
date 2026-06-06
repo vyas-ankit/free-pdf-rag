@@ -6,6 +6,8 @@ These are decorated with @tool so LangChain auto-generates their JSON schema
 from the type hints + docstring, which the LLM uses to decide arguments.
 """
 
+from typing import Optional
+
 from langchain_core.tools import tool
 
 
@@ -40,8 +42,15 @@ def make_retrieval_tool(
 
 @tool
 def fetch_location(user_id: str) -> str:
-    """Useful when you need to fetch the employee's current assigned seat, floor, and office location from the corporate directory."""
-    mock_locations = {
+    """Fetch the employee's current assigned seat, floor, and office location from the corporate directory.
+
+    Args:
+        user_id: The employee's unique identifier.
+
+    Returns:
+        A string describing the employee's current desk, floor, and office.
+    """
+    mock_locations: dict[str, dict[str, object]] = {
         "ankit_vyas": {"office": "London", "floor": 3, "desk": "3A-12"},
         "guest_user": {"office": "New York", "floor": 5, "desk": "5B-04"},
     }
@@ -50,15 +59,51 @@ def fetch_location(user_id: str) -> str:
 
 
 @tool
-def book_desk_tool(user_id: str, date: str, floor: int) -> str:
-    """Useful when you need to finalize a desk booking. Required parameters are date (string) and floor (integer)."""
-    return f"SUCCESS: Desk booked successfully for {user_id} on {date} on Floor {floor}."
+def book_desk_tool(user_id: str, start_date: str, floor: int, end_date: Optional[str] = None) -> str:
+    """Finalize a desk booking for a date or date range on a specific floor.
+
+    Args:
+        user_id: The employee's unique identifier.
+        start_date: The booking start date, must be in YYYY-MM-DD format (e.g. "2026-06-09").
+        floor: The floor number as an integer (e.g. 7, not '7th').
+        end_date: The booking end date in YYYY-MM-DD format. If None, books a single day.
+
+    Returns:
+        A success confirmation string.
+    """
+    resolved_end = end_date or start_date
+    return f"SUCCESS: Desk booked successfully for {user_id} on Floor {floor} from {start_date} to {resolved_end}."
+
+
+@tool
+def submit_vacation_tool(user_id: str, start_date: str, end_date: str, reason: str = "personal") -> str:
+    """Submit a vacation or leave request for a date range.
+
+    Args:
+        user_id: The employee's unique identifier.
+        start_date: Leave start date, must be in YYYY-MM-DD format (e.g. "2026-06-20").
+        end_date: Leave end date, must be in YYYY-MM-DD format (e.g. "2026-06-27").
+        reason: Optional reason for the leave (default: 'personal').
+
+    Returns:
+        A success confirmation string.
+    """
+    return f"SUCCESS: Vacation request submitted for {user_id} from {start_date} to {end_date} (reason: {reason}). Awaiting manager approval."
 
 
 # Single source of truth for "what tools exist" — used by:
 #   - action_executor_node    (LLM.bind_tools(tools))
 #   - the LangGraph workflow  (tool_node executes any tool call from the LLM)
 tools = [fetch_location, book_desk_tool]
+
+
+def _register_workflow_tools() -> None:
+    from src.core.workflows.engine import register_tool
+    register_tool("fetch_location", fetch_location)
+    register_tool("book_desk_tool", book_desk_tool)
+    register_tool("submit_vacation_tool", submit_vacation_tool)
+
+_register_workflow_tools()
 
 
 class _LazyToolNode:

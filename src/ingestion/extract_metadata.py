@@ -18,7 +18,7 @@ def extract_metadata_with_llm(
     metadata_txt_path: str,
     output_json_path: str = None,
     provider: str = "groq",
-    model_name: str = None
+    model_name: str = "openai/gpt-oss-120b"
 ) -> dict:
     """
     Extract metadata using LLM with strict "extract as-is" instructions.

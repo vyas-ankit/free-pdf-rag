@@ -1,0 +1,34 @@
+name: submit_vacation
+intent: SUBMIT_VACATION
+
+steps:
+  - id: extract_params
+    type: llm_extract
+    extract:
+      - name: start_date
+        required: true
+        type: string
+        format: "YYYY-MM-DD"
+        ask: "What is the start date of your vacation? (e.g. June 20, next Monday)"
+      - name: end_date
+        required: true
+        type: string
+        format: "YYYY-MM-DD"
+        ask: "What is the end date of your vacation? (e.g. June 27, next Friday)"
+
+  - id: confirm
+    type: user_confirmation
+    message: "Submit vacation leave from {{start_date}} to {{end_date}}? (yes/no)"
+
+  - id: submit
+    type: tool_call
+    tool: submit_vacation_tool
+    args:
+      user_id: "{{user_id}}"
+      start_date: "{{start_date}}"
+      end_date: "{{end_date}}"
+      reason: "{{reason}}"
+
+  - id: done
+    type: respond
+    message: "Done! Your vacation from {{start_date}} to {{end_date}} has been submitted for approval."

@@ -8,6 +8,7 @@ __pycache__/
 local_test/
 .DS_Store
 AWSCLIV2.pkg
+*.db
 
 .env
 

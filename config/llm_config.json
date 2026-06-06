@@ -16,7 +16,7 @@
       "temperature": 0
     },
     "openai": {
-      "default_model": "gpt-3.5-turbo",
+      "default_model": "gpt-5.5",
       "vision_model": "gpt-4o",
       "api_key_env": "OPENAI_API_KEY",
       "request_timeout": 120,
@@ -61,15 +61,21 @@
       "enabled": true,
       "model": "cross-encoder/ms-marco-MiniLM-L-6-v2"
     },
-    "candidate_k": 30,
-    "final_k": 10
+    "candidate_k": 50,
+    "final_k": 15
   },
   "tool_calling": {
-    "max_tool_call_rounds": 4,
+    "max_tool_call_rounds": 2,
     "query_expansion": {
       "enabled": true,
-      "max_queries": 4
+      "max_queries": 2
     }
+  },
+  "workflows": {
+    "timeout_minutes": 30
+  },
+  "session_store": {
+    "db_path": "data/sessions.db"
   },
   "ingestion": {
     "pdf_extraction": {
@@ -84,7 +90,7 @@
     }
   },
   "query_cache": {
-    "enabled": true,
+    "enabled": false,
     "max_entries": 10,
     "similarity_threshold": 0.90,
     "cache_path": "data/cache/query_cache.json"
