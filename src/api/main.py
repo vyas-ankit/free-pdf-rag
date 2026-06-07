@@ -4,7 +4,7 @@ import os
 import sys
 from dotenv import load_dotenv
 load_dotenv()
-from src.core import rag_logic, vector_store, aws
+from src.core import vector_store, aws
 from src.core.rag_simple import query_rag_simple
 
 

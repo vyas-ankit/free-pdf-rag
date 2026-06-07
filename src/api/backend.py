@@ -5,7 +5,8 @@ import shutil
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from src.core import rag_logic, vector_store, aws
+from src.core import vector_store, aws
+from src.core.rag_simple import query_rag_simple
 
 app = FastAPI(title="RAG Backend API")
 
@@ -97,7 +98,7 @@ async def upload_file(
 def query_endpoint(body: QueryRequest):
     """Query the RAG pipeline enforcing role-based filtering."""
     try:
-        answer = rag_logic.query_rag(
+        answer = query_rag_simple(
             body.query,
             vs,
             user_id=body.user_id,

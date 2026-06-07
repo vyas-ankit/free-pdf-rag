@@ -91,12 +91,6 @@ def submit_vacation_tool(user_id: str, start_date: str, end_date: str, reason: s
     return f"SUCCESS: Vacation request submitted for {user_id} from {start_date} to {end_date} (reason: {reason}). Awaiting manager approval."
 
 
-# Single source of truth for "what tools exist" — used by:
-#   - action_executor_node    (LLM.bind_tools(tools))
-#   - the LangGraph workflow  (tool_node executes any tool call from the LLM)
-tools = [fetch_location, book_desk_tool]
-
-
 def _register_workflow_tools() -> None:
     from src.core.workflows.engine import register_tool
     register_tool("fetch_location", fetch_location)
@@ -104,26 +98,3 @@ def _register_workflow_tools() -> None:
     register_tool("submit_vacation_tool", submit_vacation_tool)
 
 _register_workflow_tools()
-
-
-class _LazyToolNode:
-    """Load LangGraph's ToolNode only if legacy graph code asks for it."""
-
-    def __init__(self):
-        self._node = None
-
-    def _get_node(self):
-        if self._node is None:
-            from langgraph.prebuilt import ToolNode
-
-            self._node = ToolNode(tools)
-        return self._node
-
-    def __getattr__(self, name):
-        return getattr(self._get_node(), name)
-
-    def __call__(self, *args, **kwargs):
-        return self._get_node()(*args, **kwargs)
-
-
-tool_node = _LazyToolNode()
