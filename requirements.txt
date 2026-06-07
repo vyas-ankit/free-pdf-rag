@@ -17,6 +17,8 @@ langchain-community
 langchain-groq
 langchain-google-genai
 langchain-pinecone
+langgraph
+langgraph-checkpoint-sqlite
 pinecone
 boto3
 sentence-transformers

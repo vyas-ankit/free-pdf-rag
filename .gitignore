@@ -9,8 +9,12 @@ local_test/
 .DS_Store
 AWSCLIV2.pkg
 *.db
+*.db-shm
+*.db-wal
 
 .env
+
+venv_langgraph/*
 
 # Runtime artifacts
 ingest.log

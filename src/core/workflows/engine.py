@@ -1,21 +1,22 @@
 # src/core/workflows/engine.py
 """
-YAML workflow engine.
+YAML workflow engine — step executors and helpers.
 
-Loads a workflow definition from workflows/<name>.yaml and executes it
-step-by-step. State is persisted in _session_workflow_state so multi-turn
-actions (e.g. asking user for a missing param) resume correctly.
-
-Step types:
+Loads a workflow definition from workflows/<name>.yaml and provides the
+building blocks used to walk it step by step:
   llm_extract       — extract params from user message; ask user for missing required ones
   tool_call         — call a named tool with collected params (no LLM)
   user_confirmation — send a formatted message; wait for yes/no
   respond           — format final message and return it (terminal step)
+
+The actual step-walking loop and per-session progress live in
+src.core.nodes.workflow_node — orchestrated and persisted by the LangGraph
+checkpointer (see graph.py) rather than a hand-rolled state table.
 """
 
 import json
 import re
-from datetime import date as _date, datetime
+from datetime import date as _date
 from pathlib import Path
 from typing import Any, Optional
 
@@ -25,19 +26,13 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langsmith import traceable
 
-from src.core.config import get_config
 from src.core.llm import get_llm
 from src.core.prompts import PARAM_EXTRACTION_PROMPT
-from src.core import session_store
 
-
-def _workflow_timeout_minutes() -> int:
-    return int(get_config().get("workflows", {}).get("timeout_minutes", 30))
 
 # Registered tool callables — populated at startup by register_tool()
 _tool_registry: dict[str, Any] = {}
 
-# Per-session workflow state
 _WORKFLOWS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "workflows"
 
 
@@ -171,126 +166,3 @@ def _run_llm_extract(
 
     return collected, None  # all required params present
 
-
-# ── Public API ────────────────────────────────────────────────────────────
-
-
-def run_workflow_step(
-    workflow_name: str,
-    user_query: str,
-    history: list[BaseMessage],
-    session_id: str,
-    model_name: str,
-) -> str:
-    """
-    Advance the workflow by one logical turn. Returns a string to send back to the user.
-
-    Handles:
-    - Starting a new workflow (no existing state)
-    - Resuming a paused workflow (awaiting param or confirmation)
-    - Executing tool_call steps (non-interactive, runs immediately)
-    - Returning the final respond message
-    """
-    workflow_def = _load_workflow(workflow_name)
-    steps = workflow_def["steps"]
-
-    print(f"[workflow_engine] workflow={workflow_name!r} session={session_id!r} query={user_query!r}")
-
-    # Initialise state if first turn for this workflow
-    existing_state = session_store.get_workflow_state(session_id)
-    if not existing_state or existing_state.get("workflow") != workflow_name:
-        print(f"[workflow_engine] starting new workflow: {workflow_name!r}")
-        state = {
-            "workflow": workflow_name,
-            "current_step": 0,
-            "collected": {},
-            "awaiting_confirmation": False,
-            "last_tool_results": {},
-            "last_active": datetime.now(),
-        }
-        session_store.save_workflow_state(session_id, state)
-    else:
-        state = existing_state
-
-    # Timeout check
-    last_active = state.get("last_active")
-    if last_active:
-        elapsed_minutes = (datetime.now() - last_active).total_seconds() / 60
-        if elapsed_minutes > _workflow_timeout_minutes():
-            action_label = workflow_name.replace("_", " ")
-            print(f"[workflow_engine] session {session_id!r} expired after {elapsed_minutes:.1f} min")
-            session_store.clear_workflow_state(session_id)
-            return f"Your '{action_label}' session expired after {_workflow_timeout_minutes()} minutes of inactivity. Please start again if you'd like to continue."
-
-    state["last_active"] = datetime.now()
-    collected = state["collected"]
-    tool_results = state["last_tool_results"]
-
-    # Handle pending user_confirmation response via llm_extract
-    if state["awaiting_confirmation"]:
-        confirmation_step = {
-            "extract": [{"name": "confirmed", "required": True, "type": "boolean"}]
-        }
-        extracted, _ = _run_llm_extract(confirmation_step, user_query, history, {}, model_name)
-        confirmed_raw = extracted.get("confirmed")
-        print(f"[workflow_engine] confirmation extracted: confirmed={confirmed_raw!r}")
-        if confirmed_raw is True:
-            state["awaiting_confirmation"] = False
-            state["current_step"] += 1
-            session_store.save_workflow_state(session_id, state)
-        else:
-            session_store.clear_workflow_state(session_id)
-            return "Got it, I've cancelled the action."
-
-    # Walk steps from current_step, running non-interactive ones immediately
-    while state["current_step"] < len(steps):
-        step = steps[state["current_step"]]
-        step_type = step["type"]
-        step_id = step.get("id", str(state["current_step"]))
-
-        print(f"[workflow_engine] step {state['current_step']} id={step_id!r} type={step_type!r}")
-
-        if step_type == "llm_extract":
-            updated_collected, question = _run_llm_extract(
-                step, user_query, history, collected, model_name
-            )
-            state["collected"] = updated_collected
-            collected = updated_collected
-            print(f"[workflow_engine] collected so far: {collected}")
-            session_store.save_workflow_state(session_id, state)
-            if question:
-                print(f"[workflow_engine] missing param — asking user: {question!r}")
-                return question
-            state["current_step"] += 1
-            session_store.save_workflow_state(session_id, state)
-
-        elif step_type == "tool_call":
-            tool_name = step["tool"]
-            raw_args = step.get("args", {})
-            resolved_args = _substitute_args(raw_args, collected, tool_results)
-            print(f"[workflow_engine] calling tool={tool_name!r} args={resolved_args}")
-            result = _invoke_tool(tool_name, resolved_args)
-            print(f"[workflow_engine] tool result: {result!r}")
-            tool_results[step_id] = result
-            state["last_tool_results"] = tool_results
-            state["current_step"] += 1
-            session_store.save_workflow_state(session_id, state)
-
-        elif step_type == "user_confirmation":
-            message = _substitute(step["message"], collected, tool_results)
-            state["awaiting_confirmation"] = True
-            session_store.save_workflow_state(session_id, state)
-            return message
-
-        elif step_type == "respond":
-            message = _substitute(step["message"], collected, tool_results)
-            session_store.clear_workflow_state(session_id)
-            return message
-
-        else:
-            state["current_step"] += 1
-            session_store.save_workflow_state(session_id, state)
-
-    # Fell off the end without a respond step
-    session_store.clear_workflow_state(session_id)
-    return "Action completed."

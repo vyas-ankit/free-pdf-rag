@@ -1,19 +1,18 @@
 # src/core/workflows/intent_router.py
 """
-Intent router — runs on every turn before anything else.
+Intent classification — runs on every turn before anything else.
 
-Returns one of:
+classify_intent() returns one of:
   - "RAG"              → pass to existing query_rag_simple flow
   - "BOOK_DESK"        → run book_desk workflow
   - "SUBMIT_VACATION"  → run submit_vacation workflow
-  - "CONTEXT_SWITCH"   → user switched context mid-action; needs confirmation
+  - "CONTINUE"         → keep going with the active workflow
 
-Also manages _session_action_state: if an action is in progress and the router
-detects a different intent, it returns CONTEXT_SWITCH so the caller can ask the
-user whether to abandon the current action.
+Context-switch detection and pending-switch state now live in
+src.core.nodes / agent_state.AgentState, persisted by the LangGraph
+checkpointer (see graph.py) rather than an in-memory dict.
 """
 
-import json
 from typing import Optional
 
 from langchain_core.messages import BaseMessage, HumanMessage
@@ -29,23 +28,6 @@ WORKFLOW_INTENTS = {
     "BOOK_DESK",
     "SUBMIT_VACATION",
 }
-
-# Pending context-switch state: stores what the user originally wanted before
-# we interrupted to confirm abandonment.
-# Shape: {session_id: {"pending_intent": str, "pending_query": str}}
-_pending_context_switch: dict[str, dict] = {}
-
-
-def get_pending_context_switch(session_id: str) -> Optional[dict]:
-    return _pending_context_switch.get(session_id)
-
-
-def clear_pending_context_switch(session_id: str) -> None:
-    _pending_context_switch.pop(session_id, None)
-
-
-def set_pending_context_switch(session_id: str, intent: str, query: str) -> None:
-    _pending_context_switch[session_id] = {"pending_intent": intent, "pending_query": query}
 
 
 @traceable(name="intent_router.classify", run_type="llm",
@@ -79,30 +61,3 @@ def classify_intent(
     intent = raw if raw in valid else "RAG"
     print(f"[intent_router] query={user_query!r} active_workflow={active_workflow!r} → intent={intent}")
     return intent
-
-
-def route_intent(
-    user_query: str,
-    history: list[BaseMessage],
-    session_id: str,
-    active_workflow: Optional[str],
-    model_name: str,
-) -> str:
-    """
-    Top-level routing logic.
-
-    If an action is already in progress and the LLM detects a *different* intent,
-    we return CONTEXT_SWITCH and stash the new intent so it can be resumed after
-    the user confirms abandonment.
-    """
-    detected = classify_intent(user_query, history, active_workflow, model_name)
-
-    if detected == "CONTINUE":
-        return "CONTINUE"
-
-    if active_workflow and detected != active_workflow:
-        print(f"[intent_router] context switch detected: {active_workflow} → {detected}")
-        set_pending_context_switch(session_id, detected, user_query)
-        return "CONTEXT_SWITCH"
-
-    return detected

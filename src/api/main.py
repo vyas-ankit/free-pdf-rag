@@ -109,22 +109,24 @@ def main():
                 print("[-] Error: Your database is empty. Please index a PDF first.")
                 continue
             
-            user_role = input("\nEnter your authorized user role (Public/Finance, default is Public): ").strip() or "Public"
-            print(f"\nEntering Chat Mode as '{user_role}' (type 'exit' or 'quit' to go back)...")
-            
+            user_id = input("\nEnter your user ID (returning users get their history back): ").strip() or "guest_user"
+            user_role = input("Enter your authorized user role (Public/Finance, default is Public): ").strip() or "Public"
+            print(f"\nEntering Chat Mode as '{user_id}' ({user_role}) (type 'exit' or 'quit' to go back)...")
+
             while True:
                 user_query = input("\nYou: ").strip()
                 if user_query.lower() in ["exit", "quit"]:
                     break
                 if not user_query:
                     continue
-                
+
                 print("Assistant is thinking...")
                 try:
                     answer = query_rag_simple(
                         user_query,
                         vs,
-                        session_id="cli_session",
+                        session_id=user_id,
+                        user_id=user_id,
                         user_role=user_role,
                     )
                     print(f"\nAssistant: {answer}")
