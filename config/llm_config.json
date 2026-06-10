@@ -61,8 +61,8 @@
       "enabled": true,
       "model": "cross-encoder/ms-marco-MiniLM-L-6-v2"
     },
-    "candidate_k": 50,
-    "final_k": 15
+    "candidate_k": 30,
+    "final_k": 5
   },
   "tool_calling": {
     "max_tool_call_rounds": 2,

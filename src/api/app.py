@@ -3,8 +3,9 @@ import streamlit as st
 import requests
 import os
 
-st.set_page_config(page_title="PDF RAG Chatbot", layout="centered")
-st.title("📄 PDF RAG Chatbot")
+st.set_page_config(page_title="Agentic PDF Research Assistant", layout="centered")
+st.title("Agentic PDF Research Assistant")
+st.caption("Research your documents and take workplace actions, all in one conversation!")
 
 # Point to backend URL
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
