@@ -31,6 +31,10 @@ provided documents do not contain enough information to answer.
 3. Be descriptive in your response.
 
 4. Do not mention tool calls.
+
+5. When you use information from a retrieved chunk, cite it inline immediately
+after the relevant statement using its tag in square brackets exactly as shown
+in the context (e.g., [doc_2]). Do not invent tags, and do not reformat them.
 """
 
 # 1c. Query Expansion Prompt (used before retrieval in rag_simple)

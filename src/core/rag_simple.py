@@ -108,6 +108,7 @@ def query_rag_simple(
         "retrieval_queries": [],
         "retrieved_contexts": [],
         "cache_hit": False,
+        "citations": [],
 
         "answer": "",
         "blocked_reason": None,
@@ -116,6 +117,8 @@ def query_rag_simple(
     result = graph.invoke(input_state, config=config)
 
     answer = result.get("answer", "")
+    citations = result.get("citations", [])
+    display_answer = _append_sources_section(answer, citations)
 
     # Persist conversation turn — mirrors the original _append_history calls.
     # Skipped for cache hits on a fresh session-less re-entry isn't a concern
@@ -124,8 +127,27 @@ def query_rag_simple(
 
     if return_contexts:
         return {
-            "answer": answer,
+            "answer": display_answer,
             "contexts": result.get("retrieved_contexts", []),
+            "citations": result.get("citations", []),
             "rewritten_query": result.get("rewritten_query") or user_query,
         }
-    return answer
+    return display_answer
+
+
+def _append_sources_section(answer: str, citations: list[dict]) -> str:
+    """Append a deduplicated 'Sources' list mapping [k] -> source PDF/date.
+
+    No-op when there are no citations (e.g. non-document answers).
+    """
+    if not citations:
+        return answer
+
+    lines = ["", "Sources:"]
+    for entry in citations:
+        label = entry.get("source", "Unknown source")
+        date = entry.get("date", "")
+        suffix = f" ({date})" if date else ""
+        lines.append(f"- [{entry['number']}] {label}{suffix}")
+
+    return answer + "\n\n" + "\n".join(lines)

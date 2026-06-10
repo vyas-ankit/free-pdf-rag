@@ -54,11 +54,10 @@ def main():
         print("\n" + "="*40)
         print("1. Upload and index a local PDF file")
         print("2. Ask a question (Chat Mode)")
-        print("3. Clear the database")
-        print("4. Exit")
+        print("3. Exit")
         print("="*40)
-        
-        choice = input("Select an option (1-4): ").strip()
+
+        choice = input("Select an option (1-3): ").strip()
         
         if choice == "1":
             pdf_path = input("\nEnter the full path to your PDF file: ").strip()
@@ -134,19 +133,10 @@ def main():
                     print(f"[-] Query failed: {e}")
                     
         elif choice == "3":
-            confirm = input("\nAre you sure you want to clear the Pinecone Index? (y/n): ").strip().lower()
-            if confirm == 'y':
-                print("[~] Deleting Index...")
-                vector_store.clear_database(pc)
-                print("[+] Database cleared. Re-initializing empty index...")
-                pc = vector_store.init_pinecone(pinecone_api_key)
-                vs = vector_store.get_vector_store(embeddings, pinecone_api_key)
-                
-        elif choice == "4":
             print("\nGoodbye!")
             break
         else:
-            print("[-] Invalid input. Please enter a number from 1 to 4.")
+            print("[-] Invalid input. Please enter a number from 1 to 3.")
 
 if __name__ == "__main__":
     main()

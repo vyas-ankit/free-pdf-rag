@@ -349,12 +349,14 @@ def retrieval_answer_node(state: AgentState, config) -> dict:
     final_k = final_k_default()
 
     retrieved_contexts: list[str] = []
+    chunk_registry: list[dict] = []
     retrieve_knowledge_base = make_retrieval_tool(
         vector_store=vector_store,
         user_role=user_role,
         candidate_k=candidate_k,
         final_k=final_k,
         retrieved_contexts=retrieved_contexts,
+        chunk_registry=chunk_registry,
     )
 
     system = prompt_template or TOOL_RAG_SYSTEM_PROMPT
@@ -421,7 +423,47 @@ def retrieval_answer_node(state: AgentState, config) -> dict:
         final_msg = llm.invoke(messages)
         answer = final_msg.content or ""
 
-    return {"answer": answer, "retrieved_contexts": retrieved_contexts}
+    chunk_lookup = {entry["id"]: entry["metadata"] for entry in chunk_registry}
+    final_answer, citations = _build_citations(answer, chunk_lookup)
+
+    return {"answer": final_answer, "retrieved_contexts": retrieved_contexts, "citations": citations}
+
+
+def _build_citations(answer: str, chunk_lookup: dict[str, dict]) -> tuple[str, list[dict]]:
+    """Renumber [doc_N] markers to [k] in order of first appearance, deduped
+    by source PDF (so multiple chunks from the same document share one [k]),
+    and build a Sources list mapping [k] to real document info.
+
+    chunk_lookup: {"doc_1": {"source_pdf": "...", "date": "...", ...}, ...}
+    """
+    seen_order: list[str] = []
+    key_to_number: dict[str, int] = {}
+    key_to_metadata: dict[str, dict] = {}
+
+    def replacer(match: re.Match) -> str:
+        full_id = f"doc_{match.group(1)}"
+        metadata = chunk_lookup.get(full_id, {})
+        source = metadata.get("source_pdf")
+        dedup_key = source or full_id
+        if dedup_key not in key_to_number:
+            seen_order.append(dedup_key)
+            key_to_number[dedup_key] = len(seen_order)
+            key_to_metadata[dedup_key] = metadata
+        return f"[{key_to_number[dedup_key]}]"
+
+    rewritten = re.sub(r"\[doc_(\d+)\]", replacer, answer)
+
+    sources = []
+    for dedup_key in seen_order:
+        metadata = key_to_metadata[dedup_key]
+        sources.append({
+            "number": key_to_number[dedup_key],
+            "source": metadata.get("source_pdf", "Unknown source"),
+            "date": metadata.get("date", ""),
+            "url": None,
+        })
+
+    return rewritten, sources
 
 
 # ── 9. Workflow node ──────────────────────────────────────────────────────

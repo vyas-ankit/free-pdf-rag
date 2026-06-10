@@ -17,13 +17,21 @@ def make_retrieval_tool(
     candidate_k: int,
     final_k: int,
     retrieved_contexts: list[str] = None,
+    chunk_registry: list[dict] = None,
 ):
-    """Create the single retrieval tool used by rag_simple's tool-calling loop."""
+    """Create the single retrieval tool used by rag_simple's tool-calling loop.
+
+    chunk_registry: if provided, each retrieved chunk is appended as
+    {"id": "doc_N", "metadata": doc.metadata, "content": doc.page_content},
+    with N assigned sequentially across all calls made through this tool
+    instance — giving the LLM stable [doc_N] tags it can cite, which the
+    caller later maps back to real documents (see nodes._build_citations).
+    """
 
     @tool
     def retrieve_knowledge_base(query: str) -> str:
         """Search the uploaded PDF knowledge base for information relevant to the query."""
-        from src.core.retrieval import format_docs, retrieve_hybrid_and_rerank
+        from src.core.retrieval import format_docs_with_ids, format_docs, retrieve_hybrid_and_rerank
 
         print(f"[retrieval_tool] query={query!r}")
         docs = retrieve_hybrid_and_rerank(
@@ -35,6 +43,19 @@ def make_retrieval_tool(
         )
         if retrieved_contexts is not None:
             retrieved_contexts.extend(doc.page_content for doc in docs)
+
+        if chunk_registry is not None:
+            tagged = []
+            for doc in docs:
+                doc_id = f"doc_{len(chunk_registry) + 1}"
+                chunk_registry.append({
+                    "id": doc_id,
+                    "metadata": doc.metadata,
+                    "content": doc.page_content,
+                })
+                tagged.append((doc_id, doc))
+            return format_docs_with_ids(tagged)
+
         return format_docs(docs)
 
     return retrieve_knowledge_base

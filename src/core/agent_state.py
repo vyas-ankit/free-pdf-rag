@@ -47,6 +47,7 @@ class AgentState(TypedDict):
     retrieval_queries: List[str]
     retrieved_contexts: List[str]
     cache_hit: bool
+    citations: List[dict]
 
     # ── Output ────────────────────────────────────────────────────────────
     answer: str

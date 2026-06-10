@@ -32,12 +32,6 @@ if uploaded_files:
                 st.sidebar.error(f"Failed to process {uploaded_file.name}")
 
 # Clear DB Option
-if st.sidebar.button("Clear Database"):
-    with st.spinner("Clearing backend index..."):
-        requests.post(f"{BACKEND_URL}/clear")
-    st.sidebar.warning("Database cleared! Reloading...")
-    st.rerun()
-
 # Chat Interface
 if has_vectors:
     if "messages" not in st.session_state:

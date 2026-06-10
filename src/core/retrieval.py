@@ -255,3 +255,27 @@ def format_docs(docs) -> str:
         chunk_text = f"{header}\n{doc.page_content}" if header else doc.page_content
         parts.append(chunk_text)
     return "\n\n---\n\n".join(parts)
+
+
+def format_docs_with_ids(tagged_docs) -> str:
+    """Like format_docs, but prefixes each chunk with a stable [doc_N] tag
+    the LLM can echo back when citing — see make_retrieval_tool/_build_citations.
+
+    tagged_docs: iterable of (doc_id, doc) pairs, e.g. [("doc_1", Document), ...]
+    """
+    parts = []
+    for doc_id, doc in tagged_docs:
+        m = doc.metadata
+        source = m.get("source_pdf", "")
+        date = m.get("date", "")
+        theme = m.get("theme", "")
+        header_parts = [f"{doc_id}"]
+        if source:
+            header_parts.append(f"Source: {source}")
+        if date:
+            header_parts.append(f"Date: {date}")
+        if theme:
+            header_parts.append(f"Theme: {theme}")
+        header = f"[{' | '.join(header_parts)}]"
+        parts.append(f"{header}\n{doc.page_content}")
+    return "\n\n---\n\n".join(parts)

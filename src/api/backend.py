@@ -109,11 +109,3 @@ def query_endpoint(body: QueryRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/clear")
-def clear_db():
-    """Clear database index."""
-    try:
-        vector_store.clear_database(pc)
-        return {"status": "success", "message": "Database cleared"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
